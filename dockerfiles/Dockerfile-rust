@@ -1,0 +1,112 @@
+# syntax=docker/dockerfile-upstream:experimental
+#
+# Unified multi-stage build for all Rust services.
+# Usage:
+#   docker build --target indexer   -f dockerfiles/Dockerfile-rust .
+#   docker build --target analyzer  -f dockerfiles/Dockerfile-rust .
+#   docker build --target query-service -f dockerfiles/Dockerfile-rust .
+
+# ── Stage 1: Build all binaries in one pass ──────────────────────────
+FROM ubuntu:22.04 AS build
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=UTC
+
+RUN apt-get update && apt-get install -y \
+    git cmake g++ pkg-config libssl-dev curl llvm clang libpq-dev ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV HOME=/root
+WORKDIR ${HOME}/orderly
+
+# Install Rust toolchain
+RUN curl https://sh.rustup.rs -sSf | sh -s -- -y --no-modify-path
+ENV PATH=${HOME}/.cargo/bin:${PATH}
+RUN echo "[net]\ngit-fetch-with-cli = true" > ${HOME}/.cargo/config
+
+ENV RUSTFLAGS="-C target-cpu=x86-64"
+ENV PORTABLE=ON
+
+# Copy manifests first for dependency caching
+COPY Cargo.toml Cargo.lock ./
+COPY orderly-dashboard-indexer/Cargo.toml orderly-dashboard-indexer/Cargo.toml
+COPY orderly-dashboard-analyzer/Cargo.toml orderly-dashboard-analyzer/Cargo.toml
+COPY orderly-dashboard-query-service/Cargo.toml orderly-dashboard-query-service/Cargo.toml
+# Stub out FE workspace member so Cargo.toml resolves
+RUN mkdir -p orderly-dashboard-FE && echo '[package]\nname = "orderly-dashboard-fe-stub"\nversion = "0.0.1"\nedition = "2021"' > orderly-dashboard-FE/Cargo.toml && mkdir -p orderly-dashboard-FE/src && echo "" > orderly-dashboard-FE/src/lib.rs
+
+# Create stub sources to cache dependency compilation
+RUN for dir in orderly-dashboard-indexer orderly-dashboard-analyzer orderly-dashboard-query-service; do \
+      mkdir -p ${dir}/src && echo "fn main() {}" > ${dir}/src/main.rs; \
+    done
+RUN cargo build --release --workspace 2>/dev/null || true
+
+# Copy real source code
+COPY orderly-dashboard-indexer/ orderly-dashboard-indexer/
+COPY orderly-dashboard-analyzer/ orderly-dashboard-analyzer/
+COPY orderly-dashboard-query-service/ orderly-dashboard-query-service/
+
+# Rebuild with real sources (dependencies already cached)
+RUN touch orderly-dashboard-indexer/src/main.rs \
+    orderly-dashboard-analyzer/src/main.rs \
+    orderly-dashboard-query-service/src/main.rs \
+    && cargo build --release \
+      -p orderly-dashboard-indexer \
+      -p orderly-dashboard-analyzer \
+      -p orderly-dashboard-query-service
+
+# Install diesel CLI
+RUN cargo install diesel_cli \
+    --git https://github.com/diesel-rs/diesel.git --tag v2.2.6 \
+    --no-default-features --features "postgres" --bin diesel
+
+# ── Stage 2: Runtime base ────────────────────────────────────────────
+FROM ubuntu:22.04 AS runtime-base
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=UTC
+RUN apt-get update && apt-get install -y libssl-dev libpq-dev ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+ENV HOME=/home/orderly
+WORKDIR ${HOME}
+
+# ── Target: indexer ──────────────────────────────────────────────────
+FROM runtime-base AS indexer
+COPY --from=build /root/orderly/target/release/orderly-dashboard-indexer /usr/local/bin/orderly-dashboard-indexer
+COPY --from=build /root/.cargo/bin/diesel /usr/local/bin/diesel
+COPY orderly-dashboard-indexer/migrations ./migrations
+COPY orderly-dashboard-indexer/abis ./abis
+RUN echo '#!/usr/bin/env bash \n\
+set -euo pipefail \n\
+diesel migration run \n\
+RUST_BACKTRACE=1 orderly-dashboard-indexer -c config.json ${1+"${@}"} \n' > ./entrypoint.sh \
+    && chmod 755 ./entrypoint.sh
+EXPOSE 8018
+HEALTHCHECK --interval=15s --timeout=3s --retries=5 \
+  CMD curl -sf http://localhost:8018/ || exit 1
+ENTRYPOINT ["./entrypoint.sh"]
+
+# ── Target: analyzer ─────────────────────────────────────────────────
+FROM runtime-base AS analyzer
+COPY --from=build /root/orderly/target/release/orderly-dashboard-analyzer /usr/local/bin/orderly-dashboard-analyzer
+COPY --from=build /root/.cargo/bin/diesel /usr/local/bin/diesel
+COPY orderly-dashboard-analyzer/migrations ./migrations
+RUN echo '#!/usr/bin/env bash \n\
+set -euo pipefail \n\
+diesel migration run \n\
+RUST_BACKTRACE=1 orderly-dashboard-analyzer -c config.json ${1+"${@}"} \n' > ./entrypoint.sh \
+    && chmod 755 ./entrypoint.sh
+EXPOSE 8019
+HEALTHCHECK --interval=15s --timeout=3s --retries=5 \
+  CMD curl -sf http://localhost:8019/ || exit 1
+ENTRYPOINT ["./entrypoint.sh"]
+
+# ── Target: query-service ────────────────────────────────────────────
+FROM runtime-base AS query-service
+COPY --from=build /root/orderly/target/release/orderly-dashboard-query-service /usr/local/bin/orderly-dashboard-query-service
+RUN echo '#!/usr/bin/env bash \n\
+set -euo pipefail \n\
+RUST_BACKTRACE=1 orderly-dashboard-query-service -c config.json ${1+"${@}"} \n' > ./entrypoint.sh \
+    && chmod 755 ./entrypoint.sh
+EXPOSE 8020
+HEALTHCHECK --interval=15s --timeout=3s --retries=5 \
+  CMD curl -sf http://localhost:8020/ || exit 1
+ENTRYPOINT ["./entrypoint.sh"]

@@ -1,23 +1,39 @@
-FROM node:20-slim as build
+# ── Stage 1: Install all deps & build ────────────────────────────────
+FROM node:20-slim AS build
 
 WORKDIR /app
 
-COPY package.json .
-COPY yarn.lock .
-COPY ./orderly-dashboard-FE/ .
-RUN yarn && \
-    yarn build
+# Copy workspace root manifests
+COPY package.json yarn.lock ./
+COPY orderly-dashboard-FE/package.json orderly-dashboard-FE/package.json
 
-FROM build
+# Install all dependencies (including devDependencies for build)
+RUN yarn --frozen-lockfile
+
+# Copy FE source
+COPY orderly-dashboard-FE/ orderly-dashboard-FE/
+
+# Build (UnoCSS + Remix/Vite)
+RUN yarn workspace orderly-dashboard-fe build
+
+# ── Stage 2: Production runtime ──────────────────────────────────────
+FROM node:20-slim AS production
+
+WORKDIR /app
+
+# Copy workspace root manifests
+COPY package.json yarn.lock ./
+COPY orderly-dashboard-FE/package.json orderly-dashboard-FE/package.json
+
+# Install production dependencies only
+RUN yarn --frozen-lockfile --production
+
+# Copy build output and server
+COPY --from=build /app/orderly-dashboard-FE/build orderly-dashboard-FE/build
+COPY orderly-dashboard-FE/server.js orderly-dashboard-FE/server.js
 
 WORKDIR /app/orderly-dashboard-FE
 
-COPY package.json /app
-COPY yarn.lock /app
-COPY ./orderly-dashboard-FE/package.json /app
-COPY --from=build /app/build .
-RUN yarn --prod
-
 EXPOSE 3000
 
-CMD ["yarn", "start"]
+CMD ["node", "server.js"]

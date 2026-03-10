@@ -1,0 +1,38 @@
+# ──────────────────────────────────────────────
+# Development overrides
+# Auto-loaded by `docker compose up` (no -f needed)
+# ──────────────────────────────────────────────
+# For production: docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+
+services:
+  postgres-indexer:
+    ports:
+      - "${INDEXER_DB_PORT:-5432}:5432"
+
+  postgres-analyzer:
+    ports:
+      - "${ANALYZER_DB_PORT:-5433}:5432"
+
+  # Expose backend ports directly for local debugging
+  indexer:
+    ports:
+      - "8018:8018"
+
+  analyzer:
+    ports:
+      - "8019:8019"
+
+  query-service:
+    ports:
+      - "8020:8020"
+
+  frontend:
+    ports:
+      - "3000:3000"
+    environment:
+      QUERY_SERVICE_URL: ${QUERY_SERVICE_URL:-http://query-service:8020}
+      EVM_API_URL: ${EVM_API_URL:-https://testnet-api-evm.orderly.org}
+
+  nginx:
+    ports:
+      - "${NGINX_PORT:-8080}:80"

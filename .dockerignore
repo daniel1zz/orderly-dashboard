@@ -1,2 +1,33 @@
+# Rust build artifacts
 /target
+
+# Node modules
 node_modules
+
+# Git
+.git
+.gitignore
+
+# IDE
+.idea
+.vscode
+*.swp
+*.swo
+
+# Docker
+docker-compose.yml
+.dockerignore
+
+# Docs
+*.md
+docs/
+LICENSE
+
+# Environment files (secrets)
+.env
+.env.*
+!.env.example
+
+# OS files
+.DS_Store
+Thumbs.db
