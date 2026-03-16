@@ -7995,6 +7995,194 @@ pub mod user_ledger {
         Hash,
     )]
     #[ethevent(
+        name = "ProcessValidatedFuturesV3",
+        abi = "ProcessValidatedFuturesV3(bytes32,bytes32,bytes32,int128,int128,uint128,int128,int128,uint64,uint64,bool,uint8,bytes32,int128)"
+    )]
+    pub struct ProcessValidatedFuturesV3Filter {
+        #[ethevent(indexed)]
+        pub account_id: [u8; 32],
+        #[ethevent(indexed)]
+        pub symbol_hash: [u8; 32],
+        pub fee_asset_hash: [u8; 32],
+        pub trade_qty: i128,
+        pub notional: i128,
+        pub executed_price: u128,
+        pub fee: i128,
+        pub sum_unitary_fundings: i128,
+        pub trade_id: u64,
+        pub match_id: u64,
+        pub side: bool,
+        pub margin_mode: u8,
+        pub iso_margin_asset_hash: [u8; 32],
+        pub iso_margin: i128,
+    }
+    #[derive(
+        Clone,
+        ::ethers::contract::EthEvent,
+        ::ethers::contract::EthDisplay,
+        Default,
+        Debug,
+        PartialEq,
+        Eq,
+        Hash,
+    )]
+    #[ethevent(
+        name = "AdlResultV3",
+        abi = "AdlResultV3(uint64,bytes32,bool,bytes32,int128,int128,uint128,int128,uint8,bytes32,int128,uint64)"
+    )]
+    pub struct AdlResultV3Filter {
+        #[ethevent(indexed)]
+        pub event_id: u64,
+        #[ethevent(indexed)]
+        pub account_id: [u8; 32],
+        pub is_insurance_account: bool,
+        pub symbol_hash: [u8; 32],
+        pub position_qty_transfer: i128,
+        pub cost_position_transfer: i128,
+        pub adl_price: u128,
+        pub sum_unitary_fundings: i128,
+        pub margin_mode: u8,
+        pub iso_margin_asset_hash: [u8; 32],
+        pub iso_margin: i128,
+        pub last_engine_event_id: u64,
+    }
+    #[derive(
+        Clone,
+        ::ethers::contract::EthEvent,
+        ::ethers::contract::EthDisplay,
+        Default,
+        Debug,
+        PartialEq,
+        Eq,
+        Hash,
+    )]
+    #[ethevent(
+        name = "LiquidationResultV3",
+        abi = "LiquidationResultV3(uint64,bytes32,bytes32,int128,bool,uint64)"
+    )]
+    pub struct LiquidationResultV3Filter {
+        #[ethevent(indexed)]
+        pub event_id: u64,
+        #[ethevent(indexed)]
+        pub account_id: [u8; 32],
+        pub liquidated_asset_hash: [u8; 32],
+        pub insurance_transfer_amount: i128,
+        pub is_insurance_account: bool,
+        pub last_engine_event_id: u64,
+    }
+    #[derive(
+        Clone,
+        ::ethers::contract::EthEvent,
+        ::ethers::contract::EthDisplay,
+        Default,
+        Debug,
+        PartialEq,
+        Eq,
+        Hash,
+    )]
+    #[ethevent(
+        name = "LiquidationTransferV3",
+        abi = "LiquidationTransferV3(bytes32,bytes32,int128,int128,int128,uint128,int128,uint8,bytes32,int128)"
+    )]
+    pub struct LiquidationTransferV3Filter {
+        #[ethevent(indexed)]
+        pub account_id: [u8; 32],
+        #[ethevent(indexed)]
+        pub symbol_hash: [u8; 32],
+        pub position_qty_transfer: i128,
+        pub cost_position_transfer: i128,
+        pub fee: i128,
+        pub mark_price: u128,
+        pub sum_unitary_fundings: i128,
+        pub margin_mode: u8,
+        pub iso_margin_asset_hash: [u8; 32],
+        pub margin_to_cross: i128,
+    }
+    #[derive(
+        Clone,
+        ::ethers::contract::EthEvent,
+        ::ethers::contract::EthDisplay,
+        Default,
+        Debug,
+        PartialEq,
+        Eq,
+        Hash,
+    )]
+    #[ethevent(
+        name = "MarginTransferV3",
+        abi = "MarginTransferV3(uint64,bytes32,int128,bytes32,bytes32,uint64,uint64)"
+    )]
+    pub struct MarginTransferV3Filter {
+        #[ethevent(indexed)]
+        pub event_id: u64,
+        #[ethevent(indexed)]
+        pub account_id: [u8; 32],
+        pub transfer_amount: i128,
+        pub transfer_asset_hash: [u8; 32],
+        pub iso_symbol_hash: [u8; 32],
+        pub timestamp: u64,
+        pub last_engine_event_id: u64,
+    }
+    #[derive(
+        Clone,
+        ::ethers::contract::EthEvent,
+        ::ethers::contract::EthDisplay,
+        Default,
+        Debug,
+        PartialEq,
+        Eq,
+        Hash,
+    )]
+    #[ethevent(
+        name = "SettlementExecutionV3",
+        abi = "SettlementExecutionV3(bytes32,uint128,int128,int128,uint8,bytes32)"
+    )]
+    pub struct SettlementExecutionV3Filter {
+        #[ethevent(indexed)]
+        pub symbol_hash: [u8; 32],
+        pub mark_price: u128,
+        pub sum_unitary_fundings: i128,
+        pub settled_amount: i128,
+        pub margin_mode: u8,
+        pub iso_margin_asset_hash: [u8; 32],
+    }
+    #[derive(
+        Clone,
+        ::ethers::contract::EthEvent,
+        ::ethers::contract::EthDisplay,
+        Default,
+        Debug,
+        PartialEq,
+        Eq,
+        Hash,
+    )]
+    #[ethevent(
+        name = "SettlementResultV3",
+        abi = "SettlementResultV3(uint64,bytes32,int128,bytes32,bytes32,uint128,uint64,uint64)"
+    )]
+    pub struct SettlementResultV3Filter {
+        #[ethevent(indexed)]
+        pub event_id: u64,
+        #[ethevent(indexed)]
+        pub account_id: [u8; 32],
+        pub settled_amount: i128,
+        pub settled_asset_hash: [u8; 32],
+        pub insurance_account_id: [u8; 32],
+        pub insurance_transfer_amount: u128,
+        pub settlement_executions_count: u64,
+        pub last_engine_event_id: u64,
+    }
+    #[derive(
+        Clone,
+        ::ethers::contract::EthEvent,
+        ::ethers::contract::EthDisplay,
+        Default,
+        Debug,
+        PartialEq,
+        Eq,
+        Hash,
+    )]
+    #[ethevent(
         name = "SettlementExecution",
         abi = "SettlementExecution(bytes32,uint128,int128,int128)"
     )]
@@ -8077,6 +8265,7 @@ pub mod user_ledger {
         AccountWithdrawSolFailFilter(AccountWithdrawSolFailFilter),
         AdlResultFilter(AdlResultFilter),
         AdlResultV2Filter(AdlResultV2Filter),
+        AdlResultV3Filter(AdlResultV3Filter),
         BalanceTransferFilter(BalanceTransferFilter),
         ChangeCrossChainManagerFilter(ChangeCrossChainManagerFilter),
         ChangeCrossChainManagerV2Filter(ChangeCrossChainManagerV2Filter),
@@ -8093,13 +8282,19 @@ pub mod user_ledger {
         InternalTransferFinalisedFilter(InternalTransferFinalisedFilter),
         LiquidationResultFilter(LiquidationResultFilter),
         LiquidationResultV2Filter(LiquidationResultV2Filter),
+        LiquidationResultV3Filter(LiquidationResultV3Filter),
         LiquidationTransferFilter(LiquidationTransferFilter),
         LiquidationTransferV2Filter(LiquidationTransferV2Filter),
+        LiquidationTransferV3Filter(LiquidationTransferV3Filter),
+        MarginTransferV3Filter(MarginTransferV3Filter),
         PrimeWalletSetFilter(PrimeWalletSetFilter),
         ProcessValidatedFutures1Filter(ProcessValidatedFutures1Filter),
         ProcessValidatedFutures2Filter(ProcessValidatedFutures2Filter),
+        ProcessValidatedFuturesV3Filter(ProcessValidatedFuturesV3Filter),
         SettlementExecutionFilter(SettlementExecutionFilter),
+        SettlementExecutionV3Filter(SettlementExecutionV3Filter),
         SettlementResultFilter(SettlementResultFilter),
+        SettlementResultV3Filter(SettlementResultV3Filter),
         SwapResultUploadedFilter(SwapResultUploadedFilter),
     }
     impl ::ethers::contract::EthLogDecode for user_ledgerEvents {
@@ -8157,6 +8352,9 @@ pub mod user_ledger {
             if let Ok(decoded) = AdlResultV2Filter::decode_log(log) {
                 return Ok(user_ledgerEvents::AdlResultV2Filter(decoded));
             }
+            if let Ok(decoded) = AdlResultV3Filter::decode_log(log) {
+                return Ok(user_ledgerEvents::AdlResultV3Filter(decoded));
+            }
             if let Ok(decoded) = BalanceTransferFilter::decode_log(log) {
                 return Ok(user_ledgerEvents::BalanceTransferFilter(decoded));
             }
@@ -8205,11 +8403,20 @@ pub mod user_ledger {
             if let Ok(decoded) = LiquidationResultV2Filter::decode_log(log) {
                 return Ok(user_ledgerEvents::LiquidationResultV2Filter(decoded));
             }
+            if let Ok(decoded) = LiquidationResultV3Filter::decode_log(log) {
+                return Ok(user_ledgerEvents::LiquidationResultV3Filter(decoded));
+            }
             if let Ok(decoded) = LiquidationTransferFilter::decode_log(log) {
                 return Ok(user_ledgerEvents::LiquidationTransferFilter(decoded));
             }
             if let Ok(decoded) = LiquidationTransferV2Filter::decode_log(log) {
                 return Ok(user_ledgerEvents::LiquidationTransferV2Filter(decoded));
+            }
+            if let Ok(decoded) = LiquidationTransferV3Filter::decode_log(log) {
+                return Ok(user_ledgerEvents::LiquidationTransferV3Filter(decoded));
+            }
+            if let Ok(decoded) = MarginTransferV3Filter::decode_log(log) {
+                return Ok(user_ledgerEvents::MarginTransferV3Filter(decoded));
             }
             if let Ok(decoded) = PrimeWalletSetFilter::decode_log(log) {
                 return Ok(user_ledgerEvents::PrimeWalletSetFilter(decoded));
@@ -8220,11 +8427,20 @@ pub mod user_ledger {
             if let Ok(decoded) = ProcessValidatedFutures2Filter::decode_log(log) {
                 return Ok(user_ledgerEvents::ProcessValidatedFutures2Filter(decoded));
             }
+            if let Ok(decoded) = ProcessValidatedFuturesV3Filter::decode_log(log) {
+                return Ok(user_ledgerEvents::ProcessValidatedFuturesV3Filter(decoded));
+            }
             if let Ok(decoded) = SettlementExecutionFilter::decode_log(log) {
                 return Ok(user_ledgerEvents::SettlementExecutionFilter(decoded));
             }
+            if let Ok(decoded) = SettlementExecutionV3Filter::decode_log(log) {
+                return Ok(user_ledgerEvents::SettlementExecutionV3Filter(decoded));
+            }
             if let Ok(decoded) = SettlementResultFilter::decode_log(log) {
                 return Ok(user_ledgerEvents::SettlementResultFilter(decoded));
+            }
+            if let Ok(decoded) = SettlementResultV3Filter::decode_log(log) {
+                return Ok(user_ledgerEvents::SettlementResultV3Filter(decoded));
             }
             if let Ok(decoded) = SwapResultUploadedFilter::decode_log(log) {
                 return Ok(user_ledgerEvents::SwapResultUploadedFilter(decoded));
@@ -8266,6 +8482,7 @@ pub mod user_ledger {
                 }
                 Self::AdlResultFilter(element) => ::core::fmt::Display::fmt(element, f),
                 Self::AdlResultV2Filter(element) => ::core::fmt::Display::fmt(element, f),
+                Self::AdlResultV3Filter(element) => ::core::fmt::Display::fmt(element, f),
                 Self::BalanceTransferFilter(element) => ::core::fmt::Display::fmt(element, f),
                 Self::ChangeCrossChainManagerFilter(element) => {
                     ::core::fmt::Display::fmt(element, f)
@@ -8288,8 +8505,11 @@ pub mod user_ledger {
                 }
                 Self::LiquidationResultFilter(element) => ::core::fmt::Display::fmt(element, f),
                 Self::LiquidationResultV2Filter(element) => ::core::fmt::Display::fmt(element, f),
+                Self::LiquidationResultV3Filter(element) => ::core::fmt::Display::fmt(element, f),
                 Self::LiquidationTransferFilter(element) => ::core::fmt::Display::fmt(element, f),
                 Self::LiquidationTransferV2Filter(element) => ::core::fmt::Display::fmt(element, f),
+                Self::LiquidationTransferV3Filter(element) => ::core::fmt::Display::fmt(element, f),
+                Self::MarginTransferV3Filter(element) => ::core::fmt::Display::fmt(element, f),
                 Self::PrimeWalletSetFilter(element) => ::core::fmt::Display::fmt(element, f),
                 Self::ProcessValidatedFutures1Filter(element) => {
                     ::core::fmt::Display::fmt(element, f)
@@ -8297,8 +8517,13 @@ pub mod user_ledger {
                 Self::ProcessValidatedFutures2Filter(element) => {
                     ::core::fmt::Display::fmt(element, f)
                 }
+                Self::ProcessValidatedFuturesV3Filter(element) => {
+                    ::core::fmt::Display::fmt(element, f)
+                }
                 Self::SettlementExecutionFilter(element) => ::core::fmt::Display::fmt(element, f),
+                Self::SettlementExecutionV3Filter(element) => ::core::fmt::Display::fmt(element, f),
                 Self::SettlementResultFilter(element) => ::core::fmt::Display::fmt(element, f),
+                Self::SettlementResultV3Filter(element) => ::core::fmt::Display::fmt(element, f),
                 Self::SwapResultUploadedFilter(element) => ::core::fmt::Display::fmt(element, f),
             }
         }
@@ -8493,6 +8718,11 @@ pub mod user_ledger {
             Self::ProcessValidatedFutures2Filter(value)
         }
     }
+    impl ::core::convert::From<ProcessValidatedFuturesV3Filter> for user_ledgerEvents {
+        fn from(value: ProcessValidatedFuturesV3Filter) -> Self {
+            Self::ProcessValidatedFuturesV3Filter(value)
+        }
+    }
     impl ::core::convert::From<SettlementExecutionFilter> for user_ledgerEvents {
         fn from(value: SettlementExecutionFilter) -> Self {
             Self::SettlementExecutionFilter(value)
@@ -8506,6 +8736,36 @@ pub mod user_ledger {
     impl ::core::convert::From<SwapResultUploadedFilter> for user_ledgerEvents {
         fn from(value: SwapResultUploadedFilter) -> Self {
             Self::SwapResultUploadedFilter(value)
+        }
+    }
+    impl ::core::convert::From<AdlResultV3Filter> for user_ledgerEvents {
+        fn from(value: AdlResultV3Filter) -> Self {
+            Self::AdlResultV3Filter(value)
+        }
+    }
+    impl ::core::convert::From<LiquidationResultV3Filter> for user_ledgerEvents {
+        fn from(value: LiquidationResultV3Filter) -> Self {
+            Self::LiquidationResultV3Filter(value)
+        }
+    }
+    impl ::core::convert::From<LiquidationTransferV3Filter> for user_ledgerEvents {
+        fn from(value: LiquidationTransferV3Filter) -> Self {
+            Self::LiquidationTransferV3Filter(value)
+        }
+    }
+    impl ::core::convert::From<MarginTransferV3Filter> for user_ledgerEvents {
+        fn from(value: MarginTransferV3Filter) -> Self {
+            Self::MarginTransferV3Filter(value)
+        }
+    }
+    impl ::core::convert::From<SettlementExecutionV3Filter> for user_ledgerEvents {
+        fn from(value: SettlementExecutionV3Filter) -> Self {
+            Self::SettlementExecutionV3Filter(value)
+        }
+    }
+    impl ::core::convert::From<SettlementResultV3Filter> for user_ledgerEvents {
+        fn from(value: SettlementResultV3Filter) -> Self {
+            Self::SettlementResultV3Filter(value)
         }
     }
     ///Container type for all input parameters for the `accountDeposit` function with signature `accountDeposit((bytes32,bytes32,address,bytes32,uint256,uint128,uint64))` and selector `0x11e0cff4`

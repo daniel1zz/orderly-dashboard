@@ -62,7 +62,7 @@ use ethers::contract::EthEvent;
 use ethers::core::abi::{self, AbiDecode};
 use ethers::prelude::{Block, EthLogDecode, Log, Transaction, TransactionReceipt};
 use ethers::providers::Middleware;
-use ethers::types::{BlockNumber, Filter, H160, U64};
+use ethers::types::{BlockNumber, Filter, H160, H256, U64};
 use lazy_static::lazy_static;
 use parking_lot::Mutex;
 
@@ -109,6 +109,7 @@ pub(crate) async fn consume_logs_from_tx_receipts(
                     Some(receipt),
                     Some(block.timestamp.as_u64()),
                     cefi_cli.clone(),
+                    None, None, None, None, None, None, None, None,
                 )
                 .await
                 {
@@ -168,6 +169,7 @@ pub(crate) async fn consume_tx_and_logs(
                 None,
                 Some(block.timestamp.as_u64()),
                 cefi_cli.clone(),
+                None, None, None, None, None, None, None, None,
             )
             .await
             {
@@ -197,6 +199,97 @@ pub(crate) async fn consume_tx_and_logs(
             create_partitioned_executed_trades(executed_partitioned_trades_cache).await?;
         }
     }
+    Ok(())
+}
+
+/// Process pre-grouped batch logs. Each entry is (block_timestamp, Vec<(tx_hash, logs_for_that_tx)>).
+/// This is the batch equivalent of consume_tx_and_logs — same per-tx cache logic, same handle_log calls.
+/// Only used for blocks past upgrade_height (no handle_tx_params needed).
+/// Batch DB INSERT: accumulates all DB writes across the chunk and flushes once at the end.
+pub(crate) async fn consume_grouped_logs(
+    grouped_logs: &[(u64, Vec<(H256, Vec<Log>)>)],
+    cefi_cli: Arc<CefiClient>,
+) -> Result<()> {
+    // Batch buffers — accumulated across all blocks/txs, flushed once at end
+    let mut serial_batches_all: Vec<DbSerialBatches> = Vec::new();
+    let mut balance_txn_all: Vec<DbTransactionEvent> = Vec::new();
+    let mut adl_results_all: Vec<DbAdlResult> = Vec::new();
+    let mut liquidation_results_all: Vec<DbLiquidationResult> = Vec::new();
+    let mut settlement_results_all: Vec<DbSettlementResult> = Vec::new();
+    let mut fee_distributions_all: Vec<DbFeeDistribution> = Vec::new();
+    let mut balance_transfers_all: Vec<DbBalanceTransferEvent> = Vec::new();
+    let mut swap_results_all: Vec<DbSwapResultUploadedEvent> = Vec::new();
+    let mut partitioned_trades_all: Vec<DbPartitionedExecutedTrades> = Vec::new();
+
+    for (block_t, tx_groups) in grouped_logs {
+        for (_tx_hash, logs) in tx_groups {
+            // Per-tx caches (needed for intra-tx ordering of liquidation/settlement)
+            let mut liquidation_result_log_index_queue: VecDeque<i32> = VecDeque::new();
+            let mut settlement_result_log_index_queue: VecDeque<i32> = VecDeque::new();
+            let mut liquidation_trasfers_cache: Vec<DbLiquidationTransfer> = Vec::new();
+            let mut settlement_exectutions_cahce: Vec<DbSettlementExecution> = Vec::new();
+            let mut executed_partitioned_trades_cache: Vec<DbPartitionedExecutedTrades> = Vec::new();
+
+            for log in logs.iter() {
+                let log_entry: Log = log.clone();
+                if let Err(err) = handle_log(
+                    &mut liquidation_result_log_index_queue,
+                    &mut settlement_result_log_index_queue,
+                    &mut liquidation_trasfers_cache,
+                    &mut settlement_exectutions_cahce,
+                    &mut executed_partitioned_trades_cache,
+                    log_entry,
+                    None,
+                    Some(*block_t),
+                    cefi_cli.clone(),
+                    Some(&mut serial_batches_all),
+                    Some(&mut balance_txn_all),
+                    Some(&mut adl_results_all),
+                    Some(&mut liquidation_results_all),
+                    Some(&mut settlement_results_all),
+                    Some(&mut fee_distributions_all),
+                    Some(&mut balance_transfers_all),
+                    Some(&mut swap_results_all),
+                )
+                .await
+                {
+                    tracing::warn!(target: HANDLE_LOG, "handle_log meet err:{:?}", err);
+                }
+            }
+            liquidation_result_log_index_queue.clear();
+            partitioned_trades_all.append(&mut executed_partitioned_trades_cache);
+        }
+    }
+
+    // Flush all batch buffers in a single DB round-trip each
+    if !serial_batches_all.is_empty() {
+        create_serial_batches(serial_batches_all).await?;
+    }
+    if !balance_txn_all.is_empty() {
+        create_balance_transaction_executions(balance_txn_all).await?;
+    }
+    if !adl_results_all.is_empty() {
+        create_adl_results(adl_results_all).await?;
+    }
+    if !liquidation_results_all.is_empty() {
+        create_liquidation_results(liquidation_results_all).await?;
+    }
+    if !settlement_results_all.is_empty() {
+        create_settlement_results(settlement_results_all).await?;
+    }
+    if !fee_distributions_all.is_empty() {
+        create_fee_distributions(fee_distributions_all).await?;
+    }
+    if !balance_transfers_all.is_empty() {
+        create_balance_transfer_events(balance_transfers_all).await?;
+    }
+    if !swap_results_all.is_empty() {
+        create_swap_result_uploaded_events(swap_results_all).await?;
+    }
+    if !partitioned_trades_all.is_empty() {
+        create_partitioned_executed_trades(partitioned_trades_all).await?;
+    }
+
     Ok(())
 }
 
@@ -261,7 +354,10 @@ pub(crate) async fn handle_tx_params(
                             .cefi_get_account_info_with_retry(&trade.account_id)
                             .await;
                         let broker_hash = cal_broker_hash(&user_info.broker_id);
-                        set_account_broker_hash_cache(&trade.account_id, broker_hash.clone());
+                        set_account_broker_hash_cache(
+                            &trade.account_id,
+                            broker_hash.clone(),
+                        );
                         trade.broker_hash = Some(broker_hash.clone());
                         create_user_info(&UserInfo {
                             account_id: trade.account_id.clone(),
@@ -536,7 +632,28 @@ pub(crate) async fn handle_log(
     receipt: Option<&TransactionReceipt>,
     block_t: Option<u64>,
     cefi_cli: Arc<CefiClient>,
+    // Optional batch buffers: when Some, push instead of immediate DB write.
+    // Caller is responsible for flushing these buffers.
+    mut serial_batches_buf: Option<&mut Vec<DbSerialBatches>>,
+    mut balance_txn_buf: Option<&mut Vec<DbTransactionEvent>>,
+    mut adl_results_buf: Option<&mut Vec<DbAdlResult>>,
+    mut liquidation_results_buf: Option<&mut Vec<DbLiquidationResult>>,
+    mut settlement_results_buf: Option<&mut Vec<DbSettlementResult>>,
+    mut fee_distributions_buf: Option<&mut Vec<DbFeeDistribution>>,
+    mut balance_transfers_buf: Option<&mut Vec<DbBalanceTransferEvent>>,
+    mut swap_results_buf: Option<&mut Vec<DbSwapResultUploadedEvent>>,
 ) -> Result<()> {
+    // Macro: buffer item if buf is Some, otherwise write immediately.
+    macro_rules! buf_or_write {
+        ($buf:expr, $item:expr, $write_fn:ident) => {{
+            let __item = $item;
+            if let Some(ref mut buf) = $buf {
+                buf.push(__item);
+            } else {
+                $write_fn(vec![__item]).await?;
+            }
+        }};
+    }
     let addr_map = unsafe { ADDR_MAP.get_unchecked() };
     if let Some(sc_name) = addr_map.get(&log.address) {
         match *sc_name {
@@ -549,7 +666,7 @@ pub(crate) async fn handle_log(
                         let fee_st = receipt
                             .map(|r| r.cal_gas_used_and_wei_used())
                             .unwrap_or_default();
-                        create_serial_batches(vec![DbSerialBatches {
+                        buf_or_write!(serial_batches_buf, DbSerialBatches {
                             block_number: log.block_number.unwrap_or_default().as_u64() as i64,
                             transaction_index: log.transaction_index.unwrap_or_default().as_u64()
                                 as i32,
@@ -580,14 +697,13 @@ pub(crate) async fn handle_log(
                             l1_gas_used: Some(
                                 convert_amount(fee_st.l1_gas_used as i128).unwrap_or_default(),
                             ),
-                        }])
-                        .await?;
+                        }, create_serial_batches);
                     }
                     operator_managerEvents::EventUpload2Filter(event_upload) => {
                         let fee_st = receipt
                             .map(|r| r.cal_gas_used_and_wei_used())
                             .unwrap_or_default();
-                        create_serial_batches(vec![DbSerialBatches {
+                        buf_or_write!(serial_batches_buf, DbSerialBatches {
                             block_number: log.block_number.unwrap_or_default().as_u64() as i64,
                             transaction_index: log.transaction_index.unwrap_or_default().as_u64()
                                 as i32,
@@ -618,14 +734,13 @@ pub(crate) async fn handle_log(
                             l1_gas_used: Some(
                                 convert_amount(fee_st.l1_gas_used as i128).unwrap_or_default(),
                             ),
-                        }])
-                        .await?;
+                        }, create_serial_batches);
                     }
                     operator_managerEvents::FuturesTradeUpload1Filter(futures_upload) => {
                         let fee_st = receipt
                             .map(|r| r.cal_gas_used_and_wei_used())
                             .unwrap_or_default();
-                        create_serial_batches(vec![DbSerialBatches {
+                        buf_or_write!(serial_batches_buf, DbSerialBatches {
                             block_number: log.block_number.unwrap_or_default().as_u64() as i64,
                             transaction_index: log.transaction_index.unwrap_or_default().as_u64()
                                 as i32,
@@ -656,14 +771,13 @@ pub(crate) async fn handle_log(
                             l1_gas_used: Some(
                                 convert_amount(fee_st.l1_gas_used as i128).unwrap_or_default(),
                             ),
-                        }])
-                        .await?;
+                        }, create_serial_batches);
                     }
                     operator_managerEvents::FuturesTradeUpload2Filter(futures_upload) => {
                         let fee_st = receipt
                             .map(|r| r.cal_gas_used_and_wei_used())
                             .unwrap_or_default();
-                        create_serial_batches(vec![DbSerialBatches {
+                        buf_or_write!(serial_batches_buf, DbSerialBatches {
                             block_number: log.block_number.unwrap_or_default().as_u64() as i64,
                             transaction_index: log.transaction_index.unwrap_or_default().as_u64()
                                 as i32,
@@ -694,8 +808,7 @@ pub(crate) async fn handle_log(
                             l1_gas_used: Some(
                                 convert_amount(fee_st.l1_gas_used as i128).unwrap_or_default(),
                             ),
-                        }])
-                        .await?;
+                        }, create_serial_batches);
                     }
                     _ => {}
                 }
@@ -707,7 +820,7 @@ pub(crate) async fn handle_log(
                         let fee_st = receipt
                             .map(|r| r.cal_gas_used_and_wei_used())
                             .unwrap_or_default();
-                        create_balance_transaction_executions(vec![DbTransactionEvent {
+                        buf_or_write!(balance_txn_buf, DbTransactionEvent {
                             block_number: log.block_number.unwrap_or_default().as_u64() as i64,
                             transaction_index: log.transaction_index.unwrap_or_default().as_u64()
                                 as i32,
@@ -748,14 +861,13 @@ pub(crate) async fn handle_log(
                             l1_gas_used: Some(
                                 convert_amount(fee_st.l1_gas_used as i128).unwrap_or_default(),
                             ),
-                        }])
-                        .await?;
+                        }, create_balance_transaction_executions);
                     }
                     user_ledgerEvents::AccountDeposit2Filter(deposit_event) => {
                         let fee_st = receipt
                             .map(|r| r.cal_gas_used_and_wei_used())
                             .unwrap_or_default();
-                        create_balance_transaction_executions(vec![DbTransactionEvent {
+                        buf_or_write!(balance_txn_buf, DbTransactionEvent {
                             block_number: log.block_number.unwrap_or_default().as_u64() as i64,
                             transaction_index: log.transaction_index.unwrap_or_default().as_u64()
                                 as i32,
@@ -796,14 +908,13 @@ pub(crate) async fn handle_log(
                             l1_gas_used: Some(
                                 convert_amount(fee_st.l1_gas_used as i128).unwrap_or_default(),
                             ),
-                        }])
-                        .await?;
+                        }, create_balance_transaction_executions);
                     }
                     user_ledgerEvents::AccountDepositSolFilter(deposit_event) => {
                         let fee_st = receipt
                             .map(|r| r.cal_gas_used_and_wei_used())
                             .unwrap_or_default();
-                        create_balance_transaction_executions(vec![DbTransactionEvent {
+                        buf_or_write!(balance_txn_buf, DbTransactionEvent {
                             block_number: log.block_number.unwrap_or_default().as_u64() as i64,
                             transaction_index: log.transaction_index.unwrap_or_default().as_u64()
                                 as i32,
@@ -844,11 +955,10 @@ pub(crate) async fn handle_log(
                             l1_gas_used: Some(
                                 convert_amount(fee_st.l1_gas_used as i128).unwrap_or_default(),
                             ),
-                        }])
-                        .await?;
+                        }, create_balance_transaction_executions);
                     }
                     user_ledgerEvents::AccountWithdrawSolApproveFilter(withdraw_event) => {
-                        create_balance_transaction_executions(vec![DbTransactionEvent {
+                        buf_or_write!(balance_txn_buf, DbTransactionEvent {
                             block_number: log.block_number.unwrap_or_default().as_u64() as i64,
                             transaction_index: log.transaction_index.unwrap_or_default().as_u64()
                                 as i32,
@@ -873,11 +983,10 @@ pub(crate) async fn handle_log(
                             l1_fee_scalar: None,
                             l1_gas_price: None,
                             l1_gas_used: None,
-                        }])
-                        .await?;
+                        }, create_balance_transaction_executions);
                     }
                     user_ledgerEvents::AccountWithdrawFinish1Filter(withdraw_event) => {
-                        create_balance_transaction_executions(vec![DbTransactionEvent {
+                        buf_or_write!(balance_txn_buf, DbTransactionEvent {
                             block_number: log.block_number.unwrap_or_default().as_u64() as i64,
                             transaction_index: log.transaction_index.unwrap_or_default().as_u64()
                                 as i32,
@@ -902,11 +1011,10 @@ pub(crate) async fn handle_log(
                             l1_fee_scalar: None,
                             l1_gas_price: None,
                             l1_gas_used: None,
-                        }])
-                        .await?;
+                        }, create_balance_transaction_executions);
                     }
                     user_ledgerEvents::AccountWithdrawFinish2Filter(withdraw_event) => {
-                        create_balance_transaction_executions(vec![DbTransactionEvent {
+                        buf_or_write!(balance_txn_buf, DbTransactionEvent {
                             block_number: log.block_number.unwrap_or_default().as_u64() as i64,
                             transaction_index: log.transaction_index.unwrap_or_default().as_u64()
                                 as i32,
@@ -931,11 +1039,10 @@ pub(crate) async fn handle_log(
                             l1_fee_scalar: None,
                             l1_gas_price: None,
                             l1_gas_used: None,
-                        }])
-                        .await?;
+                        }, create_balance_transaction_executions);
                     }
                     user_ledgerEvents::AdlResultFilter(adl_result_event) => {
-                        create_adl_results(vec![DbAdlResult {
+                        buf_or_write!(adl_results_buf, DbAdlResult {
                             block_number: log.block_number.unwrap_or_default().as_u64() as i64,
                             transaction_index: log.transaction_index.unwrap_or_default().as_u64()
                                 as i32,
@@ -958,11 +1065,10 @@ pub(crate) async fn handle_log(
                                 adl_result_event.sum_unitary_fundings,
                             )?,
                             version: Some(AdlVersion::V1.value()),
-                        }])
-                        .await?;
+                        }, create_adl_results);
                     }
                     user_ledgerEvents::AdlResultV2Filter(adl_result_event) => {
-                        create_adl_results(vec![DbAdlResult {
+                        buf_or_write!(adl_results_buf, DbAdlResult {
                             block_number: log.block_number.unwrap_or_default().as_u64() as i64,
                             transaction_index: log.transaction_index.unwrap_or_default().as_u64()
                                 as i32,
@@ -984,13 +1090,36 @@ pub(crate) async fn handle_log(
                                 adl_result_event.sum_unitary_fundings,
                             )?,
                             version: Some(AdlVersion::V2.value()),
-                        }])
-                        .await?;
+                        }, create_adl_results);
+                    }
+                    user_ledgerEvents::AdlResultV3Filter(adl_result_event) => {
+                        buf_or_write!(adl_results_buf, DbAdlResult {
+                            block_number: log.block_number.unwrap_or_default().as_u64() as i64,
+                            transaction_index: log.transaction_index.unwrap_or_default().as_u64()
+                                as i32,
+                            log_index: log.log_index.unwrap_or_default().as_u64() as i32,
+                            transaction_id: format_hash(log.transaction_hash.unwrap_or_default()),
+                            block_time: (block_t.unwrap_or_default() as i64).into(),
+                            account_id: to_hex_format(&adl_result_event.account_id),
+                            insurance_account_id: "".to_string(),
+                            symbol_hash: to_hex_format(&adl_result_event.symbol_hash),
+                            position_qty_transfer: convert_amount(
+                                adl_result_event.position_qty_transfer,
+                            )?,
+                            cost_position_transfer: convert_amount(
+                                adl_result_event.cost_position_transfer,
+                            )?,
+                            adl_price: convert_amount(adl_result_event.adl_price as i128)?,
+                            sum_unitary_fundings: convert_amount(
+                                adl_result_event.sum_unitary_fundings,
+                            )?,
+                            version: Some(AdlVersion::V3.value()),
+                        }, create_adl_results);
                     }
                     user_ledgerEvents::LiquidationResultFilter(liquidation_result_event) => {
                         let log_index = log.log_index.unwrap_or_default().as_u64() as i32;
                         liquidation_result_log_index_queue.push_back(log_index);
-                        create_liquidation_results(vec![DbLiquidationResult {
+                        buf_or_write!(liquidation_results_buf, DbLiquidationResult {
                             block_number: log.block_number.unwrap_or_default().as_u64() as i64,
                             transaction_index: log.transaction_index.unwrap_or_default().as_u64()
                                 as i32,
@@ -1010,8 +1139,7 @@ pub(crate) async fn handle_log(
                                 liquidation_result_event.insurance_transfer_amount as i128,
                             )?,
                             version: Some(LiquidationResultVersion::V1.value()),
-                        }])
-                        .await?;
+                        }, create_liquidation_results);
                         if !liquidation_trasfers.is_empty() {
                             liquidation_trasfers
                                 .iter_mut()
@@ -1023,7 +1151,7 @@ pub(crate) async fn handle_log(
                     user_ledgerEvents::LiquidationResultV2Filter(liquidation_result_event) => {
                         let log_index = log.log_index.unwrap_or_default().as_u64() as i32;
                         liquidation_result_log_index_queue.push_back(log_index);
-                        create_liquidation_results(vec![DbLiquidationResult {
+                        buf_or_write!(liquidation_results_buf, DbLiquidationResult {
                             block_number: log.block_number.unwrap_or_default().as_u64() as i64,
                             transaction_index: log.transaction_index.unwrap_or_default().as_u64()
                                 as i32,
@@ -1043,8 +1171,37 @@ pub(crate) async fn handle_log(
                                 liquidation_result_event.insurance_transfer_amount as i128,
                             )?,
                             version: Some(LiquidationResultVersion::V2.value()),
-                        }])
-                        .await?;
+                        }, create_liquidation_results);
+                        if !liquidation_trasfers.is_empty() {
+                            liquidation_trasfers
+                                .iter_mut()
+                                .for_each(|v| v.liquidation_result_log_idx = log_index);
+                            create_liquidation_transfers(liquidation_trasfers.clone()).await?;
+                            liquidation_trasfers.clear();
+                        }
+                    }
+                    user_ledgerEvents::LiquidationResultV3Filter(liquidation_result_event) => {
+                        let log_index = log.log_index.unwrap_or_default().as_u64() as i32;
+                        liquidation_result_log_index_queue.push_back(log_index);
+                        buf_or_write!(liquidation_results_buf, DbLiquidationResult {
+                            block_number: log.block_number.unwrap_or_default().as_u64() as i64,
+                            transaction_index: log.transaction_index.unwrap_or_default().as_u64()
+                                as i32,
+                            log_index,
+                            transaction_id: format_hash(log.transaction_hash.unwrap_or_default()),
+                            block_time: (block_t.unwrap_or_default() as i64).into(),
+                            liquidated_account_id: to_hex_format(
+                                &liquidation_result_event.account_id,
+                            ),
+                            insurance_account_id: "".to_string(),
+                            liquidated_asset_hash: to_hex_format(
+                                &liquidation_result_event.liquidated_asset_hash,
+                            ),
+                            insurance_transfer_amount: convert_amount(
+                                liquidation_result_event.insurance_transfer_amount,
+                            )?,
+                            version: Some(LiquidationResultVersion::V3.value()),
+                        }, create_liquidation_results);
                         if !liquidation_trasfers.is_empty() {
                             liquidation_trasfers
                                 .iter_mut()
@@ -1183,14 +1340,76 @@ pub(crate) async fn handle_log(
                             }
                         }
                         executed_partitioned_trades_cache.push(db_trade.into());
-                        // create_executed_trades(vec![db_trade]).await?;
+                    }
+                    user_ledgerEvents::ProcessValidatedFuturesV3Filter(trade) => {
+                        let block_time_val = block_t.unwrap_or_default() as i64;
+                        let mut db_trade = DbPartitionedExecutedTrades {
+                            block_number: log.block_number.unwrap_or_default().as_u64() as i64,
+                            transaction_index: log.transaction_index.unwrap_or_default().as_u64()
+                                as i32,
+                            log_index: log.log_index.unwrap_or_default().as_u64() as i32,
+                            typ: TradeType::PerpTrade.value(),
+                            account_id: to_hex_format(&trade.account_id),
+                            symbol_hash: to_hex_format(&trade.symbol_hash),
+                            fee_asset_hash: to_hex_format(&trade.fee_asset_hash),
+                            trade_qty: convert_amount(trade.trade_qty).unwrap_or_default(),
+                            notional: convert_amount(trade.notional).unwrap_or_default(),
+                            executed_price: convert_amount(trade.executed_price as i128)
+                                .unwrap_or_default(),
+                            fee: convert_amount(trade.fee).unwrap_or_default(),
+                            sum_unitary_fundings: convert_amount(trade.sum_unitary_fundings)
+                                .unwrap_or_default(),
+                            trade_id: BigDecimal::from_u64(trade.trade_id).unwrap_or_default(),
+                            match_id: BigDecimal::from_u64(trade.match_id).unwrap_or_default(),
+                            timestamp: BigDecimal::from_i64(block_time_val * 1000).unwrap_or_default(),
+                            side: trade.side,
+                            block_time: NaiveDateTime::from_timestamp_opt(block_time_val, 0)
+                                .unwrap_or_default(),
+                            broker_hash: None,
+                            transaction_id: Some(format_hash(
+                                log.transaction_hash.unwrap_or_default(),
+                            )),
+                        };
+                        if let Some(broker_hash) =
+                            get_account_broker_hash_cache(&db_trade.account_id)
+                        {
+                            db_trade.broker_hash = Some(broker_hash);
+                        } else {
+                            if let Some(user_info) =
+                                get_user_info(db_trade.account_id.clone()).await?
+                            {
+                                set_account_broker_hash_cache(
+                                    &user_info.account_id,
+                                    user_info.broker_hash.clone(),
+                                );
+                                db_trade.broker_hash = Some(user_info.broker_hash);
+                            } else {
+                                let user_info = cefi_cli
+                                    .cefi_get_account_info_with_retry(&db_trade.account_id)
+                                    .await;
+                                let broker_hash = cal_broker_hash(&user_info.broker_id);
+                                set_account_broker_hash_cache(
+                                    &db_trade.account_id,
+                                    broker_hash.clone(),
+                                );
+                                db_trade.broker_hash = Some(broker_hash.clone());
+                                create_user_info(&UserInfo {
+                                    account_id: db_trade.account_id.clone(),
+                                    broker_id: user_info.broker_id.clone(),
+                                    broker_hash: cal_broker_hash(&user_info.broker_id),
+                                    address: user_info.address,
+                                })
+                                .await?;
+                            }
+                        }
+                        executed_partitioned_trades_cache.push(db_trade);
                     }
                     user_ledgerEvents::SettlementResultFilter(settlement_res_event) => {
                         // https://ethereum.org/en/developers/docs/apis/json-rpc/#eth_getlogs
                         // logIndex: QUANTITY - integer of the log index position in the block.
                         let log_index = log.log_index.unwrap_or_default().as_u64() as i32;
                         settlement_result_log_index_queue.push_back(log_index);
-                        create_settlement_results(vec![DbSettlementResult {
+                        buf_or_write!(settlement_results_buf, DbSettlementResult {
                             block_number: log.block_number.unwrap_or_default().as_u64() as i64,
                             transaction_index: log.transaction_index.unwrap_or_default().as_u64()
                                 as i32,
@@ -1208,9 +1427,38 @@ pub(crate) async fn handle_log(
                             insurance_transfer_amount: convert_amount(
                                 settlement_res_event.settled_amount,
                             )?,
-                        }])
-                        .await?;
+                        }, create_settlement_results);
                         // attention please: update settlement_execution's settlement_result_log_idx
+                        if !settlement_exectutions.is_empty() {
+                            settlement_exectutions
+                                .iter_mut()
+                                .for_each(|v| v.settlement_result_log_idx = log_index);
+                            create_settlement_executions(settlement_exectutions.clone()).await?;
+                            settlement_exectutions.clear();
+                        }
+                    }
+                    user_ledgerEvents::SettlementResultV3Filter(settlement_res_event) => {
+                        let log_index = log.log_index.unwrap_or_default().as_u64() as i32;
+                        settlement_result_log_index_queue.push_back(log_index);
+                        buf_or_write!(settlement_results_buf, DbSettlementResult {
+                            block_number: log.block_number.unwrap_or_default().as_u64() as i64,
+                            transaction_index: log.transaction_index.unwrap_or_default().as_u64()
+                                as i32,
+                            log_index,
+                            transaction_id: format_hash(log.transaction_hash.unwrap_or_default()),
+                            block_time: (block_t.unwrap_or_default() as i64).into(),
+                            account_id: to_hex_format(&settlement_res_event.account_id),
+                            settled_amount: convert_amount(settlement_res_event.settled_amount)?,
+                            settled_asset_hash: to_hex_format(
+                                &settlement_res_event.settled_asset_hash,
+                            ),
+                            insurance_account_id: to_hex_format(
+                                &settlement_res_event.insurance_account_id,
+                            ),
+                            insurance_transfer_amount: convert_amount(
+                                settlement_res_event.insurance_transfer_amount as i128,
+                            )?,
+                        }, create_settlement_results);
                         if !settlement_exectutions.is_empty() {
                             settlement_exectutions
                                 .iter_mut()
@@ -1227,6 +1475,24 @@ pub(crate) async fn handle_log(
                             // here is an error
                             log_index: log.log_index.unwrap_or_default().as_u64() as i32,
                             // will be update in handle settlement result flow
+                            settlement_result_log_idx: -1,
+                            transaction_id: format_hash(log.transaction_hash.unwrap_or_default()),
+                            symbol_hash: to_hex_format(&settlement_exec.symbol_hash),
+                            sum_unitary_fundings: convert_amount(
+                                settlement_exec.sum_unitary_fundings,
+                            )
+                            .unwrap_or_default(),
+                            mark_price: convert_amount(settlement_exec.mark_price as i128)?,
+                            settled_amount: convert_amount(settlement_exec.settled_amount)?,
+                            block_time: Some((block_t.unwrap_or_default() as i64).into()),
+                        });
+                    }
+                    user_ledgerEvents::SettlementExecutionV3Filter(settlement_exec) => {
+                        settlement_exectutions.push(DbSettlementExecution {
+                            block_number: log.block_number.unwrap_or_default().as_u64() as i64,
+                            transaction_index: log.transaction_index.unwrap_or_default().as_u64()
+                                as i32,
+                            log_index: log.log_index.unwrap_or_default().as_u64() as i32,
                             settlement_result_log_idx: -1,
                             transaction_id: format_hash(log.transaction_hash.unwrap_or_default()),
                             symbol_hash: to_hex_format(&settlement_exec.symbol_hash),
@@ -1304,8 +1570,36 @@ pub(crate) async fn handle_log(
                             version: Some(LiquidationTransferVersion::V2.value()),
                         });
                     }
+                    user_ledgerEvents::LiquidationTransferV3Filter(liquidation_transfer) => {
+                        liquidation_trasfers.push(DbLiquidationTransfer {
+                            block_number: log.block_number.unwrap_or_default().as_u64() as i64,
+                            transaction_index: log.transaction_index.unwrap_or_default().as_u64()
+                                as i32,
+                            log_index: log.log_index.unwrap_or_default().as_u64() as i32,
+                            liquidation_result_log_idx: -1,
+                            transaction_id: format_hash(log.transaction_hash.unwrap_or_default()),
+                            liquidation_transfer_id: BigDecimal::from(0),
+                            liquidator_account_id: to_hex_format(&liquidation_transfer.account_id),
+                            symbol_hash: to_hex_format(&liquidation_transfer.symbol_hash),
+                            position_qty_transfer: convert_amount(
+                                liquidation_transfer.position_qty_transfer,
+                            )?,
+                            cost_position_transfer: convert_amount(
+                                liquidation_transfer.cost_position_transfer,
+                            )?,
+                            liquidator_fee: convert_amount(0)?,
+                            insurance_fee: convert_amount(0)?,
+                            mark_price: convert_amount(liquidation_transfer.mark_price as i128)?,
+                            sum_unitary_fundings: convert_amount(
+                                liquidation_transfer.sum_unitary_fundings,
+                            )?,
+                            liquidation_fee: convert_amount(liquidation_transfer.fee)?,
+                            block_time: Some((block_t.unwrap_or_default() as i64).into()),
+                            version: Some(LiquidationTransferVersion::V3.value()),
+                        });
+                    }
                     user_ledgerEvents::FeeDistributionFilter(event) => {
-                        create_fee_distributions(vec![DbFeeDistribution {
+                        buf_or_write!(fee_distributions_buf, DbFeeDistribution {
                             block_number: log.block_number.unwrap_or_default().as_u64() as i64,
                             transaction_index: log.transaction_index.unwrap_or_default().as_u64()
                                 as i32,
@@ -1317,11 +1611,10 @@ pub(crate) async fn handle_log(
                             to_account_id: to_hex_format(&event.to_account_id),
                             amount: convert_amount(event.amount as i128)?,
                             token_hash: to_hex_format(&event.token_hash),
-                        }])
-                        .await?;
+                        }, create_fee_distributions);
                     }
                     user_ledgerEvents::BalanceTransferFilter(event) => {
-                        create_balance_transfer_events(vec![DbBalanceTransferEvent {
+                        buf_or_write!(balance_transfers_buf, DbBalanceTransferEvent {
                             block_number: log.block_number.unwrap_or_default().as_u64() as i64,
                             transaction_index: log.transaction_index.unwrap_or_default().as_u64()
                                 as i32,
@@ -1335,11 +1628,10 @@ pub(crate) async fn handle_log(
                             is_from_account_id: event.is_from_account_id,
                             transfer_type: event.transfer_type as i16,
                             transfer_id: convert_amount(event.amount as i128)?,
-                        }])
-                        .await?;
+                        }, create_balance_transfer_events);
                     }
                     user_ledgerEvents::SwapResultUploadedFilter(event) => {
-                        create_swap_result_uploaded_events(vec![DbSwapResultUploadedEvent::new(
+                        buf_or_write!(swap_results_buf, DbSwapResultUploadedEvent::new(
                             log.block_number.unwrap_or_default().as_u64() as i64,
                             log.transaction_index.unwrap_or_default().as_u64() as i32,
                             log.log_index.unwrap_or_default().as_u64() as i32,
@@ -1352,8 +1644,7 @@ pub(crate) async fn handle_log(
                             convert_amount(event.sell_quantity as i128)?,
                             convert_amount(event.chain_id.as_u128() as i128)?,
                             event.swap_status as i16,
-                        )])
-                        .await?;
+                        ), create_swap_result_uploaded_events);
                     }
                     _ => {}
                 }
@@ -1523,6 +1814,7 @@ pub async fn simple_recover_deposit_sol_logs(
                 None,
                 Some(block_num_mp_time.1),
                 cefi_cli.clone(),
+                None, None, None, None, None, None, None, None,
             )
             .await
             {
@@ -1745,6 +2037,7 @@ pub async fn simple_recover_logs<
                 None,
                 Some(block_num_mp_time.1),
                 cefi_cli.clone(),
+                None, None, None, None, None, None, None, None,
             )
             .await
             {

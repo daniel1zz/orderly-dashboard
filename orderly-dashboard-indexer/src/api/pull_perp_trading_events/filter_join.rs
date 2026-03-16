@@ -43,8 +43,8 @@ use crate::db::transaction_events::{
     query_balance_transaction_executions_with_time,
 };
 use crate::formats_external::trading_events::{
-    AccountTradingEventsResponse, AccoutTradingCursor, TradingEvent, TradingEventType,
-    TradingEventsResponse,
+    AccountTradingEventsResponse, AccoutTradingCursor, TradingEvent, TradingEventInnerData,
+    TradingEventType, TradingEventsResponse,
 };
 use anyhow::{anyhow, Result};
 use cached::{Cached, SizedCache};
@@ -707,6 +707,31 @@ pub async fn join_partitioned_perp_trades(
             ));
         }
     }
+    // After V3 contract upgrade, trades may not share a transaction with serial_batches.
+    // Emit remaining unmatched trades as standalone TradingEvents so the analyzer can process them.
+    for ((_blk, _tx_idx), mut trades) in executed_trades_map {
+        if trades.is_empty() {
+            continue;
+        }
+        trades.sort_by(|a, b| a.log_index.cmp(&b.log_index));
+        let first = &trades[0];
+        let block_timestamp = first.block_time.and_utc().timestamp() as u64;
+        let tx_id = first
+            .transaction_id
+            .clone()
+            .unwrap_or_default();
+        trading_event_vec.push(TradingEvent {
+            block_number: first.block_number as u64,
+            transaction_index: first.transaction_index as u32,
+            log_index: first.log_index as u32,
+            transaction_id: tx_id,
+            block_timestamp,
+            data: TradingEventInnerData::ProcessedTrades {
+                batch_id: 0,
+                trades: trades.into_iter().map(Into::into).collect(),
+            },
+        });
+    }
     Ok(trading_event_vec)
 }
 
@@ -826,6 +851,30 @@ pub async fn join_account_partitioned_perp_trades(
                 trades,
             ));
         }
+    }
+    // After V3 contract upgrade, trades may not share a transaction with serial_batches.
+    for ((_blk, _tx_idx), mut trades) in executed_trades_map {
+        if trades.is_empty() {
+            continue;
+        }
+        trades.sort_by(|a, b| a.log_index.cmp(&b.log_index));
+        let first = &trades[0];
+        let block_timestamp = first.block_time.and_utc().timestamp() as u64;
+        let tx_id = first
+            .transaction_id
+            .clone()
+            .unwrap_or_default();
+        trading_event_vec.push(TradingEvent {
+            block_number: first.block_number as u64,
+            transaction_index: first.transaction_index as u32,
+            log_index: first.log_index as u32,
+            transaction_id: tx_id,
+            block_timestamp,
+            data: TradingEventInnerData::ProcessedTrades {
+                batch_id: 0,
+                trades: trades.into_iter().map(Into::into).collect(),
+            },
+        });
     }
     Ok((trading_event_vec, cursor))
 }

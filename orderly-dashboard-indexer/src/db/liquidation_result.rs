@@ -32,6 +32,7 @@ pub struct DbLiquidationResult {
 pub enum LiquidationResultVersion {
     V1 = 1,
     V2 = 2,
+    V3 = 3,
 }
 
 impl LiquidationResultVersion {
@@ -47,6 +48,7 @@ impl TryFrom<i16> for LiquidationResultVersion {
         match value {
             0 | 1 => Ok(Self::V1),
             2 => Ok(Self::V2),
+            3 => Ok(Self::V3),
             _ => Err(anyhow::anyhow!(
                 "cannot convert integer:{} to LiquidationResultVersion",
                 value

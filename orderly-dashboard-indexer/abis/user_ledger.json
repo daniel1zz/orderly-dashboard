@@ -3794,6 +3794,97 @@
   },
   {
     "type": "event",
+    "name": "ProcessValidatedFuturesV3",
+    "inputs": [
+      {
+        "name": "accountId",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "symbolHash",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "feeAssetHash",
+        "type": "bytes32",
+        "indexed": false,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "tradeQty",
+        "type": "int128",
+        "indexed": false,
+        "internalType": "int128"
+      },
+      {
+        "name": "notional",
+        "type": "int128",
+        "indexed": false,
+        "internalType": "int128"
+      },
+      {
+        "name": "executedPrice",
+        "type": "uint128",
+        "indexed": false,
+        "internalType": "uint128"
+      },
+      {
+        "name": "fee",
+        "type": "int128",
+        "indexed": false,
+        "internalType": "int128"
+      },
+      {
+        "name": "sumUnitaryFundings",
+        "type": "int128",
+        "indexed": false,
+        "internalType": "int128"
+      },
+      {
+        "name": "tradeId",
+        "type": "uint64",
+        "indexed": false,
+        "internalType": "uint64"
+      },
+      {
+        "name": "matchId",
+        "type": "uint64",
+        "indexed": false,
+        "internalType": "uint64"
+      },
+      {
+        "name": "side",
+        "type": "bool",
+        "indexed": false,
+        "internalType": "bool"
+      },
+      {
+        "name": "marginMode",
+        "type": "uint8",
+        "indexed": false,
+        "internalType": "uint8"
+      },
+      {
+        "name": "isoMarginAssetHash",
+        "type": "bytes32",
+        "indexed": false,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "isoMargin",
+        "type": "int128",
+        "indexed": false,
+        "internalType": "int128"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
     "name": "SettlementExecution",
     "inputs": [
       {
@@ -4407,5 +4498,96 @@
     "type": "error",
     "name": "ZeroDelegateSigner",
     "inputs": []
+  },
+  {
+    "type": "event",
+    "name": "AdlResultV3",
+    "inputs": [
+      { "name": "eventId", "type": "uint64", "indexed": true, "internalType": "uint64" },
+      { "name": "accountId", "type": "bytes32", "indexed": true, "internalType": "bytes32" },
+      { "name": "isInsuranceAccount", "type": "bool", "indexed": false, "internalType": "bool" },
+      { "name": "symbolHash", "type": "bytes32", "indexed": false, "internalType": "bytes32" },
+      { "name": "positionQtyTransfer", "type": "int128", "indexed": false, "internalType": "int128" },
+      { "name": "costPositionTransfer", "type": "int128", "indexed": false, "internalType": "int128" },
+      { "name": "adlPrice", "type": "uint128", "indexed": false, "internalType": "uint128" },
+      { "name": "sumUnitaryFundings", "type": "int128", "indexed": false, "internalType": "int128" },
+      { "name": "marginMode", "type": "uint8", "indexed": false, "internalType": "uint8" },
+      { "name": "isoMarginAssetHash", "type": "bytes32", "indexed": false, "internalType": "bytes32" },
+      { "name": "isoMargin", "type": "int128", "indexed": false, "internalType": "int128" },
+      { "name": "lastEngineEventId", "type": "uint64", "indexed": false, "internalType": "uint64" }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "LiquidationResultV3",
+    "inputs": [
+      { "name": "eventId", "type": "uint64", "indexed": true, "internalType": "uint64" },
+      { "name": "accountId", "type": "bytes32", "indexed": true, "internalType": "bytes32" },
+      { "name": "liquidatedAssetHash", "type": "bytes32", "indexed": false, "internalType": "bytes32" },
+      { "name": "insuranceTransferAmount", "type": "int128", "indexed": false, "internalType": "int128" },
+      { "name": "isInsuranceAccount", "type": "bool", "indexed": false, "internalType": "bool" },
+      { "name": "lastEngineEventId", "type": "uint64", "indexed": false, "internalType": "uint64" }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "LiquidationTransferV3",
+    "inputs": [
+      { "name": "accountId", "type": "bytes32", "indexed": true, "internalType": "bytes32" },
+      { "name": "symbolHash", "type": "bytes32", "indexed": true, "internalType": "bytes32" },
+      { "name": "positionQtyTransfer", "type": "int128", "indexed": false, "internalType": "int128" },
+      { "name": "costPositionTransfer", "type": "int128", "indexed": false, "internalType": "int128" },
+      { "name": "fee", "type": "int128", "indexed": false, "internalType": "int128" },
+      { "name": "markPrice", "type": "uint128", "indexed": false, "internalType": "uint128" },
+      { "name": "sumUnitaryFundings", "type": "int128", "indexed": false, "internalType": "int128" },
+      { "name": "marginMode", "type": "uint8", "indexed": false, "internalType": "uint8" },
+      { "name": "isoMarginAssetHash", "type": "bytes32", "indexed": false, "internalType": "bytes32" },
+      { "name": "marginToCross", "type": "int128", "indexed": false, "internalType": "int128" }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "MarginTransferV3",
+    "inputs": [
+      { "name": "eventId", "type": "uint64", "indexed": true, "internalType": "uint64" },
+      { "name": "accountId", "type": "bytes32", "indexed": true, "internalType": "bytes32" },
+      { "name": "transferAmount", "type": "int128", "indexed": false, "internalType": "int128" },
+      { "name": "transferAssetHash", "type": "bytes32", "indexed": false, "internalType": "bytes32" },
+      { "name": "isoSymbolHash", "type": "bytes32", "indexed": false, "internalType": "bytes32" },
+      { "name": "timestamp", "type": "uint64", "indexed": false, "internalType": "uint64" },
+      { "name": "lastEngineEventId", "type": "uint64", "indexed": false, "internalType": "uint64" }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "SettlementExecutionV3",
+    "inputs": [
+      { "name": "symbolHash", "type": "bytes32", "indexed": true, "internalType": "bytes32" },
+      { "name": "markPrice", "type": "uint128", "indexed": false, "internalType": "uint128" },
+      { "name": "sumUnitaryFundings", "type": "int128", "indexed": false, "internalType": "int128" },
+      { "name": "settledAmount", "type": "int128", "indexed": false, "internalType": "int128" },
+      { "name": "marginMode", "type": "uint8", "indexed": false, "internalType": "uint8" },
+      { "name": "isoMarginAssetHash", "type": "bytes32", "indexed": false, "internalType": "bytes32" }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "SettlementResultV3",
+    "inputs": [
+      { "name": "eventId", "type": "uint64", "indexed": true, "internalType": "uint64" },
+      { "name": "accountId", "type": "bytes32", "indexed": true, "internalType": "bytes32" },
+      { "name": "settledAmount", "type": "int128", "indexed": false, "internalType": "int128" },
+      { "name": "settledAssetHash", "type": "bytes32", "indexed": false, "internalType": "bytes32" },
+      { "name": "insuranceAccountId", "type": "bytes32", "indexed": false, "internalType": "bytes32" },
+      { "name": "insuranceTransferAmount", "type": "uint128", "indexed": false, "internalType": "uint128" },
+      { "name": "settlementExecutionsCount", "type": "uint64", "indexed": false, "internalType": "uint64" },
+      { "name": "lastEngineEventId", "type": "uint64", "indexed": false, "internalType": "uint64" }
+    ],
+    "anonymous": false
   }
 ]
