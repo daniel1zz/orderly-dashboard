@@ -250,7 +250,7 @@ impl From<UserSymbolSummaryRank> for UserSumaryRankingData {
             holding_value: value.holding_value.to_string(),
             opening_cost: value.opening_cost.to_string(),
             average_entry_price: average_entry_price.to_string(),
-            un_realized_pnl: (value.holding * (value.mark_price - average_entry_price))
+            un_realized_pnl: (value.holding * value.mark_price + value.opening_cost.clone())
                 .with_scale_round(8, bigdecimal::RoundingMode::Down)
                 .to_string(),
         }

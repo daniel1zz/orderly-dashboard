@@ -266,6 +266,8 @@ pub struct UserSymbolSummaryRank {
     pub holding_value: BigDecimal,
     #[diesel(sql_type = Numeric)]
     pub opening_cost: BigDecimal,
+    #[diesel(sql_type = Numeric)]
+    pub cost_position: BigDecimal,
 }
 
 // slow query, should not be used frequently
@@ -295,7 +297,8 @@ pub async fn query_user_perp_max_symbol_holding(
       m.index_price,
       m.mark_price,
       ABS(u.holding * m.index_price) AS holding_value,
-      u.opening_cost
+      u.opening_cost,
+      u.cost_position
     FROM
       user_perp_summary u
       JOIN market_info m ON u.symbol = m.symbol_hash
@@ -336,7 +339,8 @@ pub async fn query_user_perp_max_symbol_holding(
       m.index_price,
       m.mark_price,
       ABS(u.holding * m.index_price) AS holding_value,
-      u.opening_cost
+      u.opening_cost,
+      u.cost_position
     FROM
       user_perp_summary u
       JOIN market_info m ON u.symbol = m.symbol_hash
@@ -381,7 +385,8 @@ SELECT
   m.index_price,
   m.mark_price,
   ABS(u.holding * m.index_price) AS holding_value,
-  u.opening_cost
+  u.opening_cost,
+  u.cost_position
 FROM
   user_perp_summary u
   JOIN market_info m ON u.symbol = m.symbol_hash
@@ -420,7 +425,8 @@ LIMIT $2;
         m.index_price,
         m.mark_price,
         ABS(u.holding * m.index_price) AS holding_value,
-        u.opening_cost
+        u.opening_cost,
+      u.cost_position
     FROM user_perp_summary u
     JOIN market_info m ON u.symbol = m.symbol_hash
     JOIN user_info us ON u.account_id = us.account_id
@@ -466,7 +472,8 @@ LIMIT $2;
         m.index_price,
         m.mark_price,
         ABS(u.holding * m.index_price) AS holding_value,
-        u.opening_cost
+        u.opening_cost,
+      u.cost_position
     FROM user_perp_summary u
     JOIN market_info m ON u.symbol = m.symbol_hash
     JOIN user_info us ON u.account_id = us.account_id
@@ -512,7 +519,8 @@ LIMIT $2;
         m.index_price,
         m.mark_price,
         ABS(u.holding * m.index_price) AS holding_value,
-        u.opening_cost
+        u.opening_cost,
+      u.cost_position
     FROM user_perp_summary u
     JOIN market_info m ON u.symbol = m.symbol_hash
     JOIN user_info us ON u.account_id = us.account_id
@@ -570,7 +578,8 @@ pub async fn query_user_perp_holding_by_address_and_opt_broker(
       m.index_price,
       m.mark_price,
       ABS(u.holding * m.index_price) AS holding_value,
-      u.opening_cost
+      u.opening_cost,
+      u.cost_position
     FROM
       user_perp_summary u
       JOIN market_info m ON u.symbol = m.symbol_hash
@@ -612,7 +621,8 @@ pub async fn query_user_perp_holding_by_address_and_opt_broker(
       m.index_price,
       m.mark_price,
       ABS(u.holding * m.index_price) AS holding_value,
-      u.opening_cost
+      u.opening_cost,
+      u.cost_position
     FROM
       user_perp_summary u
       JOIN market_info m ON u.symbol = m.symbol_hash
@@ -658,7 +668,8 @@ SELECT
   m.index_price,
   m.mark_price,
   ABS(u.holding * m.index_price) AS holding_value,
-  u.opening_cost
+  u.opening_cost,
+  u.cost_position
 FROM
   user_perp_summary u
   JOIN market_info m ON u.symbol = m.symbol_hash
@@ -699,7 +710,8 @@ LIMIT $3;
         m.index_price,
         m.mark_price,
         ABS(u.holding * m.index_price) AS holding_value,
-        u.opening_cost
+        u.opening_cost,
+      u.cost_position
     FROM user_perp_summary u
     JOIN market_info m ON u.symbol = m.symbol_hash
     JOIN user_info us ON u.account_id = us.account_id
@@ -761,7 +773,8 @@ pub async fn query_user_perp_max_symbol_realized_pnl(
         m.index_price,
         m.mark_price,
         ABS(u.holding * m.index_price) AS holding_value,
-        u.opening_cost
+        u.opening_cost,
+      u.cost_position
     FROM user_perp_summary u
     JOIN market_info m ON u.symbol = m.symbol_hash
     JOIN user_info us ON u.account_id = us.account_id
@@ -800,7 +813,8 @@ pub async fn query_user_perp_max_symbol_realized_pnl(
         m.index_price,
         m.mark_price,
         ABS(u.holding * m.index_price) AS holding_value,
-        u.opening_cost
+        u.opening_cost,
+      u.cost_position
     FROM user_perp_summary u
     JOIN market_info m ON u.symbol = m.symbol_hash
     JOIN user_info us ON u.account_id = us.account_id
@@ -847,7 +861,8 @@ pub async fn query_user_perp_max_symbol_realized_pnl(
         m.index_price,
         m.mark_price,
         ABS(u.holding * m.index_price) AS holding_value,
-        u.opening_cost
+        u.opening_cost,
+      u.cost_position
     FROM user_perp_summary u
     JOIN market_info m ON u.symbol = m.symbol_hash
     JOIN user_info us ON u.account_id = us.account_id
@@ -894,7 +909,8 @@ pub async fn query_user_perp_max_symbol_realized_pnl(
         m.index_price,
         m.mark_price,
         ABS(u.holding * m.index_price) AS holding_value,
-        u.opening_cost
+        u.opening_cost,
+      u.cost_position
     FROM user_perp_summary u
     JOIN market_info m ON u.symbol = m.symbol_hash
     JOIN user_info us ON u.account_id = us.account_id
