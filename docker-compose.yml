@@ -100,13 +100,17 @@ services:
       - backend
 
   # ──────────────────────────────────────────────
-  # RPC load balancer (Orderly L2)
+  # RPC load balancer (Orderly L2) — HAProxy with 9 Conduit API keys
   # ──────────────────────────────────────────────
   rpc-proxy:
-    image: nginx:alpine
+    image: haproxy:2.9-alpine
     restart: unless-stopped
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
     volumes:
-      - ./dockerfiles/nginx-rpc-proxy.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./dockerfiles/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
     networks:
       - backend
     healthcheck:
