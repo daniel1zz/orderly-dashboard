@@ -1,6 +1,6 @@
 use crate::cefi_client::CefiClient;
 use crate::config::{get_common_cfg, COMMON_CONFIGS};
-use crate::contract::consume_data_on_block;
+use crate::contract::{consume_batch_chunk, consume_data_on_block};
 use crate::db::settings::{
     get_last_rpc_processed_height, update_last_rpc_processed_height,
     update_last_rpc_processed_timestamp,
@@ -14,6 +14,10 @@ use std::cmp::{max, min};
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
+
+/// Number of blocks per batch eth_getLogs call.
+/// Conduit has a 10000 log limit; at ~300 logs/block this gives safe headroom.
+const LOG_BATCH_SIZE: u64 = 20;
 pub const ORDERLY_DASHBOARD_INDEXER: &str = "orderly_dashboard_indexer";
 pub(crate) static ORDERLY_PROCESSED_BLOCK_HEIGHT: AtomicU64 = AtomicU64::new(0);
 pub(crate) static ORDERLY_PROCESSED_TIMESTAMP: AtomicI64 = AtomicI64::new(0);
@@ -183,28 +187,90 @@ pub async fn consume_data_inner(
     Ok(())
 }
 
-// returning value is block timestamp
+/// Process blocks using batch eth_getLogs. Splits the range into chunks of LOG_BATCH_SIZE,
+/// runs chunks in parallel, and retries failed chunks individually.
+/// Returns the max block timestamp across all processed blocks.
 pub async fn parallel_consume_blocks(
     start_height: u64,
     gap: u64,
     cefi_cli: Arc<CefiClient>,
 ) -> Result<i64> {
-    let mut futs = Vec::with_capacity(gap as usize);
-    (start_height..=(start_height + gap)).for_each(|block_height| {
-        futs.push(consume_data_on_block(block_height, cefi_cli.clone()));
-    });
-    let res = raw_spawn_future(join_all(futs)).await?;
-    let mut timestamp = 0;
-    for r in res {
-        match r {
-            Ok(block_timestamp) => {
-                timestamp = max(timestamp, block_timestamp);
+    let end_height = start_height + gap;
+
+    // Split range into chunks of LOG_BATCH_SIZE
+    let mut chunks: Vec<(u64, u64)> = Vec::new();
+    let mut chunk_start = start_height;
+    while chunk_start <= end_height {
+        let chunk_end = min(chunk_start + LOG_BATCH_SIZE - 1, end_height);
+        chunks.push((chunk_start, chunk_end));
+        chunk_start = chunk_end + 1;
+    }
+
+    // Run all chunks in parallel
+    let futs: Vec<_> = chunks
+        .iter()
+        .map(|&(from, to)| consume_batch_chunk(from, to, cefi_cli.clone()))
+        .collect();
+    let results = raw_spawn_future(join_all(futs)).await?;
+
+    let mut timestamp: i64 = 0;
+    let mut failed_chunks: Vec<(u64, u64)> = Vec::new();
+    for (i, result) in results.into_iter().enumerate() {
+        match result {
+            Ok(chunk_ts) => {
+                timestamp = max(timestamp, chunk_ts);
             }
             Err(err) => {
-                tracing::warn!(target: ORDERLY_DASHBOARD_INDEXER, "consume block task err:{}", err);
-                return Err(anyhow::anyhow!("Some task failed to be executed."));
+                tracing::warn!(
+                    target: ORDERLY_DASHBOARD_INDEXER,
+                    "batch chunk {}-{} failed: {}, will retry",
+                    chunks[i].0, chunks[i].1, err
+                );
+                failed_chunks.push(chunks[i]);
             }
         }
     }
+
+    // Retry failed chunks up to 3 times each
+    for (from, to) in &failed_chunks {
+        let mut last_err = None;
+        for attempt in 1..=3 {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            match consume_batch_chunk(*from, *to, cefi_cli.clone()).await {
+                Ok(chunk_ts) => {
+                    timestamp = max(timestamp, chunk_ts);
+                    tracing::info!(
+                        target: ORDERLY_DASHBOARD_INDEXER,
+                        "retry chunk {}-{} succeeded on attempt {}",
+                        from, to, attempt
+                    );
+                    last_err = None;
+                    break;
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        target: ORDERLY_DASHBOARD_INDEXER,
+                        "retry chunk {}-{} attempt {}/3 failed: {}",
+                        from, to, attempt, err
+                    );
+                    last_err = Some(err);
+                }
+            }
+        }
+        if let Some(err) = last_err {
+            return Err(anyhow::anyhow!(
+                "chunk {}-{} failed after 3 retries: {}", from, to, err
+            ));
+        }
+    }
+
+    if !failed_chunks.is_empty() {
+        tracing::info!(
+            target: ORDERLY_DASHBOARD_INDEXER,
+            "batch {}-{}: {} chunks failed initially, all recovered via retry",
+            start_height, end_height, failed_chunks.len()
+        );
+    }
+
     Ok(timestamp)
 }

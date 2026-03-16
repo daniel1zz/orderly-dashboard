@@ -4,14 +4,17 @@ mod tx_event_handler;
 use crate::cefi_client::CefiClient;
 use crate::config::COMMON_CONFIGS;
 use crate::contract::tx_event_handler::consume_logs_from_tx_receipts;
-use crate::eth_rpc::{get_block_logs, get_block_receipts, get_block_with_txs};
+use crate::eth_rpc::{
+    get_batch_block_logs, get_batch_block_timestamps, get_block_logs, get_block_receipts,
+    get_block_with_txs, get_blockheader_by_number,
+};
 use ethers::prelude::{Address, Block, Transaction, TransactionReceipt, H160, H256};
 use ethers::types::Log;
 use once_cell::sync::OnceCell;
 use std::collections::BTreeMap;
 use std::str::FromStr;
 use std::sync::Arc;
-use tx_event_handler::consume_tx_and_logs;
+use tx_event_handler::{consume_grouped_logs, consume_tx_and_logs};
 pub use tx_event_handler::{
     simple_recover_deposit_sol_logs,
     simple_recover_sol_deposit_withdraw_approve_and_rebalance_logs,
@@ -170,6 +173,104 @@ pub async fn query_and_filter_block_data_logs(
     );
 
     Ok((block, tx_log_vec))
+}
+
+/// Batch-process a chunk of blocks using a single eth_getLogs call.
+/// Returns the max block timestamp in the chunk, or Err on failure.
+/// Falls back to per-block processing if batch getLogs fails.
+pub(crate) async fn consume_batch_chunk(
+    from_block: u64,
+    to_block: u64,
+    cefi_cli: Arc<CefiClient>,
+) -> anyhow::Result<i64> {
+    // Step 1: Batch fetch all logs for this chunk
+    let all_logs = match get_batch_block_logs(from_block, to_block).await {
+        Ok(logs) => logs,
+        Err(err) => {
+            let err_str = err.to_string();
+            if err_str.contains("LOG_LIMIT_EXCEEDED") {
+                tracing::warn!(
+                    target: ORDERLY_DASHBOARD_INDEXER,
+                    "batch getLogs limit exceeded for {}-{}, falling back to per-block",
+                    from_block, to_block
+                );
+                return consume_chunk_per_block(from_block, to_block, cefi_cli).await;
+            }
+            return Err(err);
+        }
+    };
+
+    // Step 2: Group logs by block_number → by tx_hash (preserving log_index order)
+    // BTreeMap ensures block_number ordering
+    let mut block_logs: BTreeMap<u64, BTreeMap<H256, Vec<Log>>> = BTreeMap::new();
+    for log in all_logs {
+        let block_num = log.block_number.map(|n| n.as_u64()).unwrap_or(0);
+        let tx_hash = log.transaction_hash.unwrap_or_default();
+        block_logs
+            .entry(block_num)
+            .or_default()
+            .entry(tx_hash)
+            .or_default()
+            .push(log);
+    }
+
+    // Step 3+4: Fetch all needed block timestamps in a single JSON-RPC batch request.
+    // We need timestamps for: blocks with logs + the last block (for cursor update).
+    let mut blocks_needing_ts: Vec<u64> = block_logs.keys().copied().collect();
+    if !blocks_needing_ts.contains(&to_block) {
+        blocks_needing_ts.push(to_block);
+    }
+
+    let block_timestamps = match get_batch_block_timestamps(&blocks_needing_ts).await {
+        Ok(ts) => ts,
+        Err(err) => {
+            tracing::warn!(
+                target: ORDERLY_DASHBOARD_INDEXER,
+                "batch header fetch failed for chunk {}-{}: {}, falling back to per-block",
+                from_block, to_block, err
+            );
+            return consume_chunk_per_block(from_block, to_block, cefi_cli).await;
+        }
+    };
+
+    let last_block_ts = block_timestamps
+        .get(&to_block)
+        .map(|&ts| ts as i64)
+        .unwrap_or(0);
+
+    // Step 5: Build grouped data structure and process
+    let mut grouped: Vec<(u64, Vec<(H256, Vec<Log>)>)> = Vec::new();
+    for (block_num, tx_map) in block_logs {
+        let block_t = block_timestamps.get(&block_num).copied().unwrap_or(0);
+        let tx_groups: Vec<(H256, Vec<Log>)> = tx_map.into_iter().collect();
+        grouped.push((block_t, tx_groups));
+    }
+
+    if !grouped.is_empty() {
+        consume_grouped_logs(&grouped, cefi_cli).await?;
+    }
+
+    // Return max timestamp across all blocks
+    let max_ts = block_timestamps
+        .values()
+        .max()
+        .map(|&ts| ts as i64)
+        .unwrap_or(last_block_ts);
+    Ok(std::cmp::max(max_ts, last_block_ts))
+}
+
+/// Fallback: process a chunk of blocks one by one (original per-block logic).
+async fn consume_chunk_per_block(
+    from_block: u64,
+    to_block: u64,
+    cefi_cli: Arc<CefiClient>,
+) -> anyhow::Result<i64> {
+    let mut max_ts: i64 = 0;
+    for block_height in from_block..=to_block {
+        let ts = consume_data_on_block(block_height, cefi_cli.clone()).await?;
+        max_ts = std::cmp::max(max_ts, ts);
+    }
+    Ok(max_ts)
 }
 
 #[cfg(test)]

@@ -8,7 +8,7 @@ use tokio::{
 };
 
 /// defaulted runtime threads number
-const DEFAULT_THREADS: usize = 5;
+const DEFAULT_THREADS: usize = 8;
 const RUNTIME_CONTEXT: &str = "runtime_context";
 static THREADS_NUMBER: OnceCell<usize> = OnceCell::new();
 
