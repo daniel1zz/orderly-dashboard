@@ -25,6 +25,10 @@ RUN echo "[net]\ngit-fetch-with-cli = true" > ${HOME}/.cargo/config
 
 ENV RUSTFLAGS="-C target-cpu=x86-64"
 ENV PORTABLE=ON
+# Limit parallel compilation to avoid OOM on 16GB machines.
+# Each rustc/LLVM process uses ~1-2GB; 8 cores × 2GB = 16GB = OOM.
+# 2 jobs keeps peak memory under ~6GB, leaving headroom for OS + Docker.
+ENV CARGO_BUILD_JOBS=2
 
 # Copy manifests first for dependency caching
 COPY Cargo.toml Cargo.lock ./
@@ -38,7 +42,7 @@ RUN mkdir -p orderly-dashboard-FE && echo '[package]\nname = "orderly-dashboard-
 RUN for dir in orderly-dashboard-indexer orderly-dashboard-analyzer orderly-dashboard-query-service; do \
       mkdir -p ${dir}/src && echo "fn main() {}" > ${dir}/src/main.rs; \
     done
-RUN cargo build --release --workspace 2>/dev/null || true
+RUN cargo build --release --workspace -j ${CARGO_BUILD_JOBS} 2>/dev/null || true
 
 # Copy real source code
 COPY orderly-dashboard-indexer/ orderly-dashboard-indexer/
