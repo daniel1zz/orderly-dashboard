@@ -143,7 +143,7 @@ pub async fn analyzer_perp_trade(
         }
     }
 
-    tracing::info!(target:PERP_ANALYZER,"handle trade length: {}, max_perp_trade_id: {}", trade_len, max_perp_trade_id);
+    tracing::info!(target:"perp-trade-analyzer","handle trade length: {}, max_perp_trade_id: {}", trade_len, max_perp_trade_id);
     return max_perp_trade_id;
 }
 
