@@ -183,6 +183,13 @@ pub(crate) async fn consume_batch_chunk(
     to_block: u64,
     cefi_cli: Arc<CefiClient>,
 ) -> anyhow::Result<i64> {
+    // Pre-upgrade blocks need handle_tx_params which requires full transaction data.
+    // Batch mode only fetches logs, so fall back to per-block processing for these blocks.
+    let upgrade_height = unsafe { COMMON_CONFIGS.get_unchecked().l2_config.upgrade_height };
+    if from_block < upgrade_height {
+        return consume_chunk_per_block(from_block, to_block, cefi_cli).await;
+    }
+
     // Step 1: Batch fetch all logs for this chunk
     let all_logs = match get_batch_block_logs(from_block, to_block).await {
         Ok(logs) => logs,
@@ -196,12 +203,33 @@ pub(crate) async fn consume_batch_chunk(
                 );
                 return consume_chunk_per_block(from_block, to_block, cefi_cli).await;
             }
+            if err_str.contains("too large") || err_str.contains("encoding") {
+                let range = to_block - from_block + 1;
+                if range <= 1 {
+                    tracing::warn!(
+                        target: ORDERLY_DASHBOARD_INDEXER,
+                        "single block {} too large for batch, falling back to per-block",
+                        from_block
+                    );
+                    return consume_chunk_per_block(from_block, to_block, cefi_cli).await;
+                }
+                let mid = from_block + range / 2;
+                tracing::warn!(
+                    target: ORDERLY_DASHBOARD_INDEXER,
+                    "batch getLogs too large for {}-{} ({} blocks), splitting into {}-{} and {}-{}",
+                    from_block, to_block, range, from_block, mid - 1, mid, to_block
+                );
+                let ts1 = Box::pin(consume_batch_chunk(from_block, mid - 1, cefi_cli.clone())).await?;
+                let ts2 = Box::pin(consume_batch_chunk(mid, to_block, cefi_cli)).await?;
+                return Ok(std::cmp::max(ts1, ts2));
+            }
             return Err(err);
         }
     };
 
     // Step 2: Group logs by block_number → by tx_hash (preserving log_index order)
     // BTreeMap ensures block_number ordering
+    let total_fetched = all_logs.len();
     let mut block_logs: BTreeMap<u64, BTreeMap<H256, Vec<Log>>> = BTreeMap::new();
     for log in all_logs {
         let block_num = log.block_number.map(|n| n.as_u64()).unwrap_or(0);
@@ -212,6 +240,19 @@ pub(crate) async fn consume_batch_chunk(
             .entry(tx_hash)
             .or_default()
             .push(log);
+    }
+
+    // Validate: no logs were lost during grouping
+    let total_grouped: usize = block_logs
+        .values()
+        .flat_map(|tx_map| tx_map.values())
+        .map(|logs| logs.len())
+        .sum();
+    if total_grouped != total_fetched {
+        return Err(anyhow::anyhow!(
+            "log count mismatch after grouping for blocks {}-{}: fetched {} but grouped {}",
+            from_block, to_block, total_fetched, total_grouped
+        ));
     }
 
     // Step 3+4: Fetch all needed block timestamps in a single JSON-RPC batch request.
@@ -239,11 +280,12 @@ pub(crate) async fn consume_batch_chunk(
         .unwrap_or(0);
 
     // Step 5: Build grouped data structure and process
-    let mut grouped: Vec<(u64, Vec<(H256, Vec<Log>)>)> = Vec::new();
+    // Tuple: (block_number, block_timestamp, Vec<(tx_hash, logs)>)
+    let mut grouped: Vec<(u64, u64, Vec<(H256, Vec<Log>)>)> = Vec::new();
     for (block_num, tx_map) in block_logs {
         let block_t = block_timestamps.get(&block_num).copied().unwrap_or(0);
         let tx_groups: Vec<(H256, Vec<Log>)> = tx_map.into_iter().collect();
-        grouped.push((block_t, tx_groups));
+        grouped.push((block_num, block_t, tx_groups));
     }
 
     if !grouped.is_empty() {
@@ -260,7 +302,7 @@ pub(crate) async fn consume_batch_chunk(
 }
 
 /// Fallback: process a chunk of blocks one by one (original per-block logic).
-async fn consume_chunk_per_block(
+pub(crate) async fn consume_chunk_per_block(
     from_block: u64,
     to_block: u64,
     cefi_cli: Arc<CefiClient>,

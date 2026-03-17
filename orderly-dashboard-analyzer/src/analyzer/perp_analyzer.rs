@@ -13,8 +13,6 @@ use crate::db::hourly_orderly_perp::HourlyOrderlyPerpKey;
 use crate::db::hourly_user_perp::HourlyUserPerpKey;
 use crate::db::user_perp_summary::UserPerpSummaryKey;
 
-const PERP_ANALYZER: &str = "perp-trade-analyzer";
-
 pub async fn analyzer_perp_trade(
     trades: Vec<Trade>,
     pulled_block_height: i64,

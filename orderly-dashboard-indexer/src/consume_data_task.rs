@@ -1,6 +1,6 @@
 use crate::cefi_client::CefiClient;
 use crate::config::{get_common_cfg, COMMON_CONFIGS};
-use crate::contract::{consume_batch_chunk, consume_data_on_block};
+use crate::contract::{consume_batch_chunk, consume_chunk_per_block, consume_data_on_block};
 use crate::db::settings::{
     get_last_rpc_processed_height, update_last_rpc_processed_height,
     update_last_rpc_processed_timestamp,
@@ -97,6 +97,7 @@ pub async fn consume_data_inner(
     let parallel_limit = get_common_cfg().sync_block_strategy.parallel_limit;
     let cefi_url = unsafe { COMMON_CONFIGS.get_unchecked().be_api_base_url.clone() };
     let cefi_client = std::sync::Arc::new(CefiClient::new(cefi_url));
+    let mut consecutive_failures: u32 = 0;
     loop {
         if start_height >= target_block {
             match pull_target_block().await {
@@ -143,14 +144,66 @@ pub async fn consume_data_inner(
         }
         match parallel_consume_blocks(start_height, gap, cefi_client.clone()).await {
             Err(err) => {
-                tokio::time::sleep(Duration::from_secs(5)).await;
+                consecutive_failures += 1;
                 tracing::warn!(
                     target: ORDERLY_DASHBOARD_INDEXER,
-                    "parallel_consume_blocks err: {}",
-                    err
+                    "parallel_consume_blocks err (attempt {}): {}",
+                    consecutive_failures, err
                 );
+                // After 3 batch failures, fall back to per-block processing to avoid
+                // getting stuck while ensuring no blocks are skipped.
+                if consecutive_failures >= 3 {
+                    tracing::warn!(
+                        target: ORDERLY_DASHBOARD_INDEXER,
+                        "batch failed {} times for blocks {}-{}, falling back to per-block processing",
+                        consecutive_failures, start_height, start_height + gap
+                    );
+                    match consume_chunk_per_block(start_height, start_height + gap, cefi_client.clone()).await {
+                        Ok(block_timestamp) => {
+                            tracing::info!(
+                                target: ORDERLY_DASHBOARD_INDEXER,
+                                "per-block fallback succeeded for blocks {}-{}",
+                                start_height, start_height + gap
+                            );
+                            consecutive_failures = 0;
+                            if update_cursor {
+                                if let Err(err) = update_last_rpc_processed_height(last_processed).await {
+                                    tracing::warn!(
+                                        target: ORDERLY_DASHBOARD_INDEXER,
+                                        "update_last_rpc_processed_height failed with err: {}",
+                                        err
+                                    );
+                                }
+                                if let Err(err) = update_last_rpc_processed_timestamp(block_timestamp).await {
+                                    tracing::warn!(
+                                        target: ORDERLY_DASHBOARD_INDEXER,
+                                        "update_last_rpc_processed_timestamp failed with err: {},block_timestamp:{}",
+                                        err, block_timestamp
+                                    );
+                                }
+                                ORDERLY_PROCESSED_BLOCK_HEIGHT.store(last_processed, Ordering::Relaxed);
+                                ORDERLY_PROCESSED_TIMESTAMP.store(block_timestamp, Ordering::Relaxed);
+                            }
+                            start_height = last_processed + 1;
+                            continue;
+                        }
+                        Err(fallback_err) => {
+                            tracing::error!(
+                                target: ORDERLY_DASHBOARD_INDEXER,
+                                "per-block fallback also failed for blocks {}-{}: {}, will retry from batch",
+                                start_height, start_height + gap, fallback_err
+                            );
+                            // Reset so next iteration tries batch first before falling back again
+                            consecutive_failures = 0;
+                            tokio::time::sleep(Duration::from_secs(10)).await;
+                        }
+                    }
+                } else {
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                }
             }
             Ok(block_timestamp) => {
+                consecutive_failures = 0;
                 if update_cursor {
                     if let Err(err) = update_last_rpc_processed_height(last_processed).await {
                         tracing::warn!(
@@ -258,9 +311,28 @@ pub async fn parallel_consume_blocks(
             }
         }
         if let Some(err) = last_err {
-            return Err(anyhow::anyhow!(
-                "chunk {}-{} failed after 3 retries: {}", from, to, err
-            ));
+            // Batch retries exhausted — fall back to per-block processing.
+            // This ensures we never skip blocks regardless of the error type.
+            tracing::warn!(
+                target: ORDERLY_DASHBOARD_INDEXER,
+                "chunk {}-{} failed after 3 batch retries: {}, falling back to per-block",
+                from, to, err
+            );
+            match consume_chunk_per_block(*from, *to, cefi_cli.clone()).await {
+                Ok(chunk_ts) => {
+                    timestamp = max(timestamp, chunk_ts);
+                    tracing::info!(
+                        target: ORDERLY_DASHBOARD_INDEXER,
+                        "per-block fallback for {}-{} succeeded", from, to
+                    );
+                    continue;
+                }
+                Err(e) => {
+                    return Err(anyhow::anyhow!(
+                        "chunk {}-{} per-block fallback also failed: {}", from, to, e
+                    ));
+                }
+            }
         }
     }
 

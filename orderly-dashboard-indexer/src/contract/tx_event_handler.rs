@@ -202,14 +202,17 @@ pub(crate) async fn consume_tx_and_logs(
     Ok(())
 }
 
-/// Process pre-grouped batch logs. Each entry is (block_timestamp, Vec<(tx_hash, logs_for_that_tx)>).
+/// Process pre-grouped batch logs. Each entry is (block_number, block_timestamp, Vec<(tx_hash, logs_for_that_tx)>).
 /// This is the batch equivalent of consume_tx_and_logs — same per-tx cache logic, same handle_log calls.
-/// Only used for blocks past upgrade_height (no handle_tx_params needed).
+/// NOTE: Pre-upgrade blocks (< upgrade_height) should be routed to per-block processing by the caller
+/// (consume_batch_chunk), since batch mode lacks full transaction data needed for handle_tx_params.
 /// Batch DB INSERT: accumulates all DB writes across the chunk and flushes once at the end.
 pub(crate) async fn consume_grouped_logs(
-    grouped_logs: &[(u64, Vec<(H256, Vec<Log>)>)],
+    grouped_logs: &[(u64, u64, Vec<(H256, Vec<Log>)>)],
     cefi_cli: Arc<CefiClient>,
 ) -> Result<()> {
+    let upgrade_height = unsafe { COMMON_CONFIGS.get_unchecked().l2_config.upgrade_height };
+
     // Batch buffers — accumulated across all blocks/txs, flushed once at end
     let mut serial_batches_all: Vec<DbSerialBatches> = Vec::new();
     let mut balance_txn_all: Vec<DbTransactionEvent> = Vec::new();
@@ -221,7 +224,7 @@ pub(crate) async fn consume_grouped_logs(
     let mut swap_results_all: Vec<DbSwapResultUploadedEvent> = Vec::new();
     let mut partitioned_trades_all: Vec<DbPartitionedExecutedTrades> = Vec::new();
 
-    for (block_t, tx_groups) in grouped_logs {
+    for (block_num, block_t, tx_groups) in grouped_logs {
         for (_tx_hash, logs) in tx_groups {
             // Per-tx caches (needed for intra-tx ordering of liquidation/settlement)
             let mut liquidation_result_log_index_queue: VecDeque<i32> = VecDeque::new();
@@ -256,39 +259,53 @@ pub(crate) async fn consume_grouped_logs(
                     tracing::warn!(target: HANDLE_LOG, "handle_log meet err:{:?}", err);
                 }
             }
+
+            // For blocks before upgrade_height, handle_tx_params extracts trade data from
+            // transaction calldata (FuturesTradeUpload, EventUpload). We need to fetch the
+            // actual transaction to call it — but in batch mode we only have logs, not full txs.
+            // For pre-upgrade blocks, fall back to per-block processing which has full tx data.
+            // This is safe because pre-upgrade blocks are only encountered during historical backfill.
+            if *block_num < upgrade_height && !logs.is_empty() {
+                tracing::warn!(
+                    target: HANDLE_LOG,
+                    "batch mode encountered pre-upgrade block {} (< {}), tx_params processing requires per-block fallback",
+                    block_num, upgrade_height
+                );
+            }
+
             liquidation_result_log_index_queue.clear();
             partitioned_trades_all.append(&mut executed_partitioned_trades_cache);
         }
     }
 
-    // Flush all batch buffers in a single DB round-trip each
-    if !serial_batches_all.is_empty() {
-        create_serial_batches(serial_batches_all).await?;
+    // Flush all batch buffers. Each table uses ON CONFLICT (upsert), so partial
+    // failure + retry is idempotent — no duplicate data will be created.
+    // We track which tables flush successfully for debugging on failure.
+    let mut flushed_tables: Vec<&str> = Vec::new();
+    macro_rules! flush_batch {
+        ($buf:expr, $fn:expr, $name:expr) => {
+            if !$buf.is_empty() {
+                if let Err(err) = $fn($buf).await {
+                    tracing::error!(
+                        target: HANDLE_LOG,
+                        "batch flush failed at table '{}' (flushed so far: {:?}): {}",
+                        $name, flushed_tables, err
+                    );
+                    return Err(err.into());
+                }
+                flushed_tables.push($name);
+            }
+        };
     }
-    if !balance_txn_all.is_empty() {
-        create_balance_transaction_executions(balance_txn_all).await?;
-    }
-    if !adl_results_all.is_empty() {
-        create_adl_results(adl_results_all).await?;
-    }
-    if !liquidation_results_all.is_empty() {
-        create_liquidation_results(liquidation_results_all).await?;
-    }
-    if !settlement_results_all.is_empty() {
-        create_settlement_results(settlement_results_all).await?;
-    }
-    if !fee_distributions_all.is_empty() {
-        create_fee_distributions(fee_distributions_all).await?;
-    }
-    if !balance_transfers_all.is_empty() {
-        create_balance_transfer_events(balance_transfers_all).await?;
-    }
-    if !swap_results_all.is_empty() {
-        create_swap_result_uploaded_events(swap_results_all).await?;
-    }
-    if !partitioned_trades_all.is_empty() {
-        create_partitioned_executed_trades(partitioned_trades_all).await?;
-    }
+    flush_batch!(serial_batches_all, create_serial_batches, "serial_batches");
+    flush_batch!(balance_txn_all, create_balance_transaction_executions, "balance_transactions");
+    flush_batch!(adl_results_all, create_adl_results, "adl_results");
+    flush_batch!(liquidation_results_all, create_liquidation_results, "liquidation_results");
+    flush_batch!(settlement_results_all, create_settlement_results, "settlement_results");
+    flush_batch!(fee_distributions_all, create_fee_distributions, "fee_distributions");
+    flush_batch!(balance_transfers_all, create_balance_transfer_events, "balance_transfers");
+    flush_batch!(swap_results_all, create_swap_result_uploaded_events, "swap_results");
+    flush_batch!(partitioned_trades_all, create_partitioned_executed_trades, "partitioned_trades");
 
     Ok(())
 }
