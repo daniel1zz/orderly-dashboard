@@ -100,12 +100,18 @@ pub async fn create_partitioned_executed_trades(
     use crate::schema::partitioned_executed_trades::dsl::*;
     let mut conn = POOL.get().await.expect(DB_CONN_ERR_MSG);
 
-    let num_rows = diesel::insert_into(partitioned_executed_trades)
-        .values(trades)
-        .on_conflict_do_nothing()
-        .execute(&mut conn)
-        .await?;
-    Ok(num_rows)
+    // Batch insert in chunks to avoid PostgreSQL's 65535 parameter limit.
+    // Each trade has ~15 fields, so 1000 trades ≈ 15000 params (well under limit).
+    let mut total_rows = 0;
+    for chunk in trades.chunks(1000) {
+        let num_rows = diesel::insert_into(partitioned_executed_trades)
+            .values(chunk)
+            .on_conflict_do_nothing()
+            .execute(&mut conn)
+            .await?;
+        total_rows += num_rows;
+    }
+    Ok(total_rows)
 }
 
 /// Query trades where broker_hash is null, for backfill.

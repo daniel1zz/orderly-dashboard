@@ -79,12 +79,16 @@ pub async fn create_serial_batches(batches: Vec<DbSerialBatches>) -> Result<usiz
     use crate::schema::serial_batches::dsl::*;
     let mut conn = POOL.get().await.expect(DB_CONN_ERR_MSG);
 
-    let num_rows = diesel::insert_into(serial_batches)
-        .values(batches)
-        .on_conflict_do_nothing()
-        .execute(&mut conn)
-        .await?;
-    Ok(num_rows)
+    let mut total_rows = 0;
+    for chunk in batches.chunks(1000) {
+        let num_rows = diesel::insert_into(serial_batches)
+            .values(chunk)
+            .on_conflict_do_nothing()
+            .execute(&mut conn)
+            .await?;
+        total_rows += num_rows;
+    }
+    Ok(total_rows)
 }
 
 pub async fn query_serial_batches_with_type(
