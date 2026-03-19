@@ -183,17 +183,12 @@ pub(crate) async fn consume_batch_chunk(
     to_block: u64,
     cefi_cli: Arc<CefiClient>,
 ) -> anyhow::Result<i64> {
-    // Pre-upgrade blocks need handle_tx_params for INITIAL sync (requires full transaction data).
-    // For RECOVERY (update_cursor=false), batch mode is safe because handle_tx_params data
-    // already exists from initial sync and ON CONFLICT DO NOTHING skips duplicates.
-    // Only enforce per-block for initial sync (when the indexer is processing new blocks).
-    //
-    // TODO: Pass a `is_recovery` flag to skip this check cleanly instead of
-    // relying on upgrade_height. For now, disabled to speed up recovery.
-    // let upgrade_height = unsafe { COMMON_CONFIGS.get_unchecked().l2_config.upgrade_height };
-    // if from_block < upgrade_height {
-    //     return consume_chunk_per_block(from_block, to_block, cefi_cli).await;
-    // }
+    // Pre-upgrade blocks need handle_tx_params which requires full transaction data.
+    // Batch mode only fetches logs, so fall back to per-block processing for these blocks.
+    let upgrade_height = unsafe { COMMON_CONFIGS.get_unchecked().l2_config.upgrade_height };
+    if from_block < upgrade_height {
+        return consume_chunk_per_block(from_block, to_block, cefi_cli).await;
+    }
 
     // Step 1: Batch fetch all logs for this chunk
     let all_logs = match get_batch_block_logs(from_block, to_block).await {
