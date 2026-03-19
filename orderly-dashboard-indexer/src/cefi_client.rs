@@ -28,7 +28,8 @@ impl CefiClient {
 
 impl CefiClient {
     pub async fn cefi_get_account_info_with_retry(&self, account_id: &str) -> CefiAccountInfo {
-        loop {
+        let max_retries = 3;
+        for attempt in 1..=max_retries {
             match self.cefi_get_account_info(account_id).await {
                 Ok(res) => {
                     if res.success {
@@ -36,22 +37,42 @@ impl CefiClient {
                             return account;
                         }
                     }
+                    // "Account not found" or empty data — not a transient error, stop retrying
+                    if let Some(code) = res.code {
+                        if code == -1607 {
+                            tracing::info!(
+                                "cefi_get_account_info account not found (code -1607), using default for account_id: {}",
+                                account_id
+                            );
+                            return CefiAccountInfo {
+                                address: String::new(),
+                                broker_id: String::from("unknown"),
+                            };
+                        }
+                    }
                     tracing::warn!(
-                        "cefi_get_account_info decode failed with response: {:?} for account_id: {}",
-                        res,
-                        account_id
+                        "cefi_get_account_info decode failed (attempt {}/{}): {:?} for account_id: {}",
+                        attempt, max_retries, res, account_id
                     );
                 }
                 Err(err) => {
                     tracing::warn!(
-                        "cefi_get_account_info req failed with msg err: {}, for account_id: {}",
-                        err,
-                        account_id
+                        "cefi_get_account_info req failed (attempt {}/{}): {}, for account_id: {}",
+                        attempt, max_retries, err, account_id
                     );
                 }
             }
 
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        // All retries exhausted — return default instead of blocking forever
+        tracing::warn!(
+            "cefi_get_account_info exhausted {} retries for account_id: {}, using default",
+            max_retries, account_id
+        );
+        CefiAccountInfo {
+            address: String::new(),
+            broker_id: String::from("unknown"),
         }
     }
 
